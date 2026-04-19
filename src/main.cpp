@@ -13,6 +13,7 @@
 #include "notification_manager.h"
 #include "web_server_manager.h"
 #include "event_log.h"
+#include "ota_manager.h"
 
 AppConfig g_config;
 RuntimeStatus g_status;
@@ -25,6 +26,7 @@ NotificationManager g_notifier;
 EventLog g_eventLog;
 MonitorEngine g_monitor;
 WebServerManager g_web;
+OtaManager g_ota;
 
 static bool initialRelayStateFromConfig() {
   switch (g_config.relayRestoreBehavior) {
@@ -58,7 +60,8 @@ void setup() {
   g_wifi.begin(g_config.deviceName);
   g_notifier.begin(&g_config);
   g_monitor.begin(&g_config, &g_status, &g_relay, &g_notifier, &g_eventLog);
-  g_web.begin(&g_config, &g_status, &g_relay, &g_cfgMgr, &g_eventLog, &g_monitor);
+  g_ota.begin(&g_eventLog);
+  g_web.begin(&g_config, &g_status, &g_relay, &g_cfgMgr, &g_eventLog, &g_monitor, &g_ota);
 
   g_led.setPattern(LedPattern::SlowBlink);
 }
