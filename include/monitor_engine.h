@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "types.h"
 #include "app_state.h"
@@ -21,6 +21,11 @@ private:
   void runInternetWatchdogMode();
   void runDeviceWatchdogMode();
   void triggerPowerCycle(uint32_t powerOffSeconds, uint32_t holdoffSeconds, const String& reason);
+  void enterCooldown(const String& reason);
+  bool cycleLimitReached() const;
+  uint32_t activeCooldownSeconds() const;
+  uint32_t activeMaxCyclesPerIncident() const;
+  uint32_t activeMaxCyclesPerHour() const;
 
   AppConfig* config_ = nullptr;
   RuntimeStatus* status_ = nullptr;
@@ -28,12 +33,13 @@ private:
   NotificationManager* notifier_ = nullptr;
   EventLog* eventLog_ = nullptr;
 
+  uint32_t bootMs_ = 0;
   uint32_t lastMonitorMs_ = 0;
   uint32_t failureStartMs_ = 0;
   uint32_t holdoffStartMs_ = 0;
   uint32_t cooldownStartMs_ = 0;
   uint32_t powerOffStartMs_ = 0;
+  uint32_t hourWindowStartMs_ = 0;
   bool powerCycleActive_ = false;
   bool relayPowerOffIssued_ = false;
 };
-

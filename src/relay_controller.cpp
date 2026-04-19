@@ -1,10 +1,10 @@
-﻿#include <Arduino.h>
+#include <Arduino.h>
 #include "pins.h"
 #include "relay_controller.h"
 
-void RelayController::begin() {
+void RelayController::begin(bool initialOn) {
   pinMode(Pins::RELAY, OUTPUT);
-  set(true);
+  set(initialOn);
 }
 
 void RelayController::set(bool on) {
@@ -19,4 +19,3 @@ void RelayController::toggle() {
 bool RelayController::isOn() const {
   return relayOn_;
 }
-
