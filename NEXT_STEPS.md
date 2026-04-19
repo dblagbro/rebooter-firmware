@@ -20,7 +20,7 @@ Build a production-capable local-first Sonoff S31 firmware prototype for:
 
 1. Verify Sonoff S31 pin mapping against the actual board revision.
 2. Split watchdog logic into clearer Internet and Device watchdog modules.
-3. Add local authentication around mutating API routes and setup flow.
+3. Build the setup/login UI around the local auth API token flow.
 4. Create first serial flash log in `docs/`.
 5. Validate relay, LED, and button behavior on isolated hardware before mains testing.
 
@@ -30,3 +30,4 @@ Build a production-capable local-first Sonoff S31 firmware prototype for:
 - Added config schema/default validation, last-known-good config recovery, relay restore persistence, boot warm-up, Wi-Fi-loss watchdog pause, retry limits, and cooldown lockout.
 - Added persisted recent event-log storage across reboots.
 - Added OTA manager plus local reboot, factory-reset, and firmware upload API endpoints.
+- Added local AuthManager with salted password hashes and protected mutating API routes.

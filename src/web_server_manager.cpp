@@ -8,6 +8,7 @@
 #include "event_log.h"
 #include "monitor_engine.h"
 #include "ota_manager.h"
+#include "auth_manager.h"
 
 static ESP8266WebServer server(80);
 static RelayController* sRelay = nullptr;
@@ -17,6 +18,7 @@ static ConfigManager* sCfgMgr = nullptr;
 static EventLog* sEventLog = nullptr;
 static MonitorEngine* sMonitor = nullptr;
 static OtaManager* sOta = nullptr;
+static AuthManager* sAuth = nullptr;
 
 static String modeToString(DeviceMode mode) {
   switch (mode) {
@@ -56,6 +58,10 @@ static void persistRelayState() {
   sCfgMgr->save(*sConfig);
 }
 
+static bool requireAuth() {
+  return sAuth && sAuth->requireAuth(server);
+}
+
 static void sendConfigJson() {
   JsonDocument doc;
   doc["schema_version"] = sConfig->schemaVersion;
@@ -92,7 +98,8 @@ static void sendConfigJson() {
 void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
                              RelayController* relay, ConfigManager* cfgMgr,
                              EventLog* eventLog, MonitorEngine* monitor,
-                             OtaManager* ota) {
+                             OtaManager* ota,
+                             AuthManager* auth) {
   config_ = config;
   status_ = status;
   sConfig = config;
@@ -102,6 +109,8 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   sEventLog = eventLog;
   sMonitor = monitor;
   sOta = ota;
+  sAuth = auth;
+  server.collectHeaders("X-Rebooter-Auth");
 
   server.on("/api/status", HTTP_GET, []() {
     JsonDocument doc;
@@ -129,6 +138,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   });
 
   server.on("/api/relay/on", HTTP_POST, []() {
+    if (!requireAuth()) return;
     sRelay->set(true);
     persistRelayState();
     sEventLog->add("relay", "Relay turned on by API");
@@ -136,6 +146,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   });
 
   server.on("/api/relay/off", HTTP_POST, []() {
+    if (!requireAuth()) return;
     sRelay->set(false);
     persistRelayState();
     sEventLog->add("relay", "Relay turned off by API");
@@ -143,6 +154,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   });
 
   server.on("/api/relay/toggle", HTTP_POST, []() {
+    if (!requireAuth()) return;
     sRelay->toggle();
     persistRelayState();
     sEventLog->add("relay", sRelay->isOn() ? "Relay toggled on by API" : "Relay toggled off by API");
@@ -150,6 +162,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   });
 
   server.on("/api/config/save", HTTP_POST, []() {
+    if (!requireAuth()) return;
     if (!server.hasArg("plain")) {
       server.send(400, "application/json", "{\"error\":\"missing body\"}");
       return;
@@ -169,6 +182,14 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     const String restore = doc["relay_restore_behavior"] | restoreToString(sConfig->relayRestoreBehavior);
     sConfig->relayRestoreBehavior = restoreFromString(restore);
     sConfig->deviceName = doc["device_name"] | sConfig->deviceName;
+    if (doc["admin_password"].is<const char*>()) {
+      const String user = doc["admin_username"] | sConfig->adminUsername;
+      const String password = doc["admin_password"] | "";
+      if (!sAuth->setPassword(user, password)) {
+        server.send(400, "application/json", "{\"error\":\"invalid credentials\"}");
+        return;
+      }
+    }
     sConfig->monitorIntervalSeconds = doc["monitor_interval_seconds"] | sConfig->monitorIntervalSeconds;
     sConfig->bootWarmupSeconds = doc["boot_warmup_seconds"] | sConfig->bootWarmupSeconds;
     sConfig->manualButtonEnabled = doc["manual_button_enabled"] | sConfig->manualButtonEnabled;
@@ -207,6 +228,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
 
 
   server.on("/api/system/reboot", HTTP_POST, []() {
+    if (!requireAuth()) return;
     sEventLog->add("system", "Reboot requested by API");
     server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
     delay(100);
@@ -214,6 +236,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   });
 
   server.on("/api/system/factory-reset", HTTP_POST, []() {
+    if (!requireAuth()) return;
     sEventLog->add("system", "Factory reset requested by API");
     sCfgMgr->reset();
     server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
@@ -222,6 +245,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   });
 
   server.on("/api/system/ota", HTTP_POST, []() {
+    if (!requireAuth()) return;
     if (sOta->hasError()) {
       String body = "{\"ok\":false,\"error\":\"" + sOta->errorString() + "\"}";
       server.send(500, "application/json", body);
@@ -231,6 +255,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     delay(250);
     ESP.restart();
   }, []() {
+    if (sAuth && !sAuth->isAuthorized(server)) return;
     HTTPUpload& upload = server.upload();
     sOta->handleUpload(upload);
   });
