@@ -66,6 +66,7 @@ struct AppConfig {
   String deviceName = "Rebooter";
   String adminUsername = "admin";
   String adminPasswordHash = "";
+  String adminPasswordSalt = "";
   String timezone = "America/New_York";
   DeviceMode currentMode = DeviceMode::SmartPlug;
   RelayRestoreBehavior relayRestoreBehavior = RelayRestoreBehavior::RestorePrevious;

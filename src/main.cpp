@@ -14,6 +14,7 @@
 #include "web_server_manager.h"
 #include "event_log.h"
 #include "ota_manager.h"
+#include "auth_manager.h"
 
 AppConfig g_config;
 RuntimeStatus g_status;
@@ -27,6 +28,7 @@ EventLog g_eventLog;
 MonitorEngine g_monitor;
 WebServerManager g_web;
 OtaManager g_ota;
+AuthManager g_auth;
 
 static bool initialRelayStateFromConfig() {
   switch (g_config.relayRestoreBehavior) {
@@ -61,7 +63,8 @@ void setup() {
   g_notifier.begin(&g_config);
   g_monitor.begin(&g_config, &g_status, &g_relay, &g_notifier, &g_eventLog);
   g_ota.begin(&g_eventLog);
-  g_web.begin(&g_config, &g_status, &g_relay, &g_cfgMgr, &g_eventLog, &g_monitor, &g_ota);
+  g_auth.begin(&g_config, &g_eventLog);
+  g_web.begin(&g_config, &g_status, &g_relay, &g_cfgMgr, &g_eventLog, &g_monitor, &g_ota, &g_auth);
 
   g_led.setPattern(LedPattern::SlowBlink);
 }

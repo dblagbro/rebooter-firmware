@@ -59,6 +59,11 @@ static void validateConfig(AppConfig& config) {
   if (config.deviceName.isEmpty() || config.deviceName.length() > 32) config.deviceName = "Rebooter";
   config.adminUsername.trim();
   if (config.adminUsername.isEmpty() || config.adminUsername.length() > 32) config.adminUsername = "admin";
+  config.adminPasswordHash.trim();
+  config.adminPasswordSalt.trim();
+  if (config.adminPasswordHash.length() > 80) config.adminPasswordHash = "";
+  if (config.adminPasswordSalt.length() > 48) config.adminPasswordSalt = "";
+  if (config.adminPasswordHash.isEmpty()) config.adminPasswordSalt = "";
   config.timezone.trim();
   if (config.timezone.isEmpty() || config.timezone.length() > 64) config.timezone = "America/New_York";
 
@@ -118,6 +123,7 @@ static bool loadFromPath(const char* path, AppConfig& out) {
   out.deviceName = doc["device_name"] | out.deviceName;
   out.adminUsername = doc["admin_username"] | out.adminUsername;
   out.adminPasswordHash = doc["admin_password_hash"] | out.adminPasswordHash;
+  out.adminPasswordSalt = doc["admin_password_salt"] | out.adminPasswordSalt;
   out.timezone = doc["timezone"] | out.timezone;
   out.monitorIntervalSeconds = doc["monitor_interval_seconds"] | out.monitorIntervalSeconds;
   out.bootWarmupSeconds = doc["boot_warmup_seconds"] | out.bootWarmupSeconds;
@@ -200,6 +206,7 @@ bool ConfigManager::save(const AppConfig& config) {
   doc["device_name"] = clean.deviceName;
   doc["admin_username"] = clean.adminUsername;
   doc["admin_password_hash"] = clean.adminPasswordHash;
+  doc["admin_password_salt"] = clean.adminPasswordSalt;
   doc["timezone"] = clean.timezone;
   doc["monitor_interval_seconds"] = clean.monitorIntervalSeconds;
   doc["boot_warmup_seconds"] = clean.bootWarmupSeconds;
