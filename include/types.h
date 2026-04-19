@@ -1,0 +1,75 @@
+﻿#pragma once
+
+#include <Arduino.h>
+#include <vector>
+
+enum class DeviceMode : uint8_t {
+  SmartPlug = 0,
+  InternetWatchdog = 1,
+  DeviceWatchdog = 2
+};
+
+enum class RelayRestoreBehavior : uint8_t {
+  RestorePrevious = 0,
+  AlwaysOn = 1,
+  AlwaysOff = 2
+};
+
+enum class HealthState : uint8_t {
+  Unknown = 0,
+  Healthy = 1,
+  PartialFailure = 2,
+  Failed = 3,
+  Holdoff = 4,
+  Cooldown = 5
+};
+
+struct InternetWatchdogConfig {
+  std::vector<String> targets;
+  uint32_t failureThresholdSeconds = 180;
+  uint32_t powerOffSeconds = 5;
+  uint32_t postRebootHoldoffSeconds = 180;
+  uint32_t maxCyclesPerIncident = 3;
+  uint32_t maxCyclesPerHour = 6;
+  uint32_t cooldownSeconds = 3600;
+  uint32_t dnsRefreshSeconds = 300;
+  uint32_t recoveryStabilitySeconds = 15;
+};
+
+struct DeviceWatchdogConfig {
+  String target = "";
+  uint32_t failureThresholdSeconds = 60;
+  uint32_t powerOffSeconds = 5;
+  uint32_t postRebootHoldoffSeconds = 300;
+  uint32_t maxCyclesPerIncident = 3;
+  uint32_t maxCyclesPerHour = 6;
+  uint32_t cooldownSeconds = 3600;
+  uint32_t recoveryStabilitySeconds = 30;
+};
+
+struct NotificationConfig {
+  bool enabled = false;
+  String type = "webhook";
+  String webhookUrl = "";
+  String webhookAuthToken = "";
+  bool sendOnTrigger = true;
+  bool sendOnRecovery = true;
+  bool sendOnMaxCyclesReached = true;
+};
+
+struct AppConfig {
+  String deviceName = "Rebooter";
+  String adminUsername = "admin";
+  String adminPasswordHash = "";
+  String timezone = "America/New_York";
+  DeviceMode currentMode = DeviceMode::SmartPlug;
+  RelayRestoreBehavior relayRestoreBehavior = RelayRestoreBehavior::RestorePrevious;
+  bool statusLedEnabled = true;
+  uint16_t eventLogMaxEntries = 200;
+  uint32_t monitorIntervalSeconds = 5;
+  bool manualButtonEnabled = true;
+  InternetWatchdogConfig internet;
+  DeviceWatchdogConfig device;
+  NotificationConfig notifications;
+};
+
