@@ -1,7 +1,6 @@
-﻿#pragma once
+#pragma once
 
 #include <Arduino.h>
-
 #include <vector>
 
 struct EventEntry {
@@ -16,7 +15,11 @@ public:
   void add(const String& type, const String& message);
   String asJson() const;
 private:
+  void trimToLimit();
+  void load();
+  void persist() const;
+
+  const char* logPath_ = "/events.json";
   uint16_t maxEntries_ = 200;
   std::vector<EventEntry> items_;
 };
-
