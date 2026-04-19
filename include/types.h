@@ -1,7 +1,9 @@
-﻿#pragma once
+#pragma once
 
 #include <Arduino.h>
 #include <vector>
+
+static constexpr uint16_t CONFIG_SCHEMA_VERSION = 1;
 
 enum class DeviceMode : uint8_t {
   SmartPlug = 0,
@@ -51,25 +53,30 @@ struct NotificationConfig {
   bool enabled = false;
   String type = "webhook";
   String webhookUrl = "";
+  String webhookMethod = "POST";
   String webhookAuthToken = "";
   bool sendOnTrigger = true;
   bool sendOnRecovery = true;
   bool sendOnMaxCyclesReached = true;
+  bool sendTestNotificationEnabled = true;
 };
 
 struct AppConfig {
+  uint16_t schemaVersion = CONFIG_SCHEMA_VERSION;
   String deviceName = "Rebooter";
   String adminUsername = "admin";
   String adminPasswordHash = "";
   String timezone = "America/New_York";
   DeviceMode currentMode = DeviceMode::SmartPlug;
   RelayRestoreBehavior relayRestoreBehavior = RelayRestoreBehavior::RestorePrevious;
+  bool lastRelayOn = true;
   bool statusLedEnabled = true;
   uint16_t eventLogMaxEntries = 200;
   uint32_t monitorIntervalSeconds = 5;
+  uint32_t bootWarmupSeconds = 30;
+  uint32_t notificationCooldownSeconds = 60;
   bool manualButtonEnabled = true;
   InternetWatchdogConfig internet;
   DeviceWatchdogConfig device;
   NotificationConfig notifications;
 };
-

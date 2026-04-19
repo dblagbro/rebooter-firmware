@@ -1,4 +1,4 @@
-﻿#include <Arduino.h>
+#include <Arduino.h>
 #include <LittleFS.h>
 
 #include "pins.h"
@@ -26,6 +26,19 @@ EventLog g_eventLog;
 MonitorEngine g_monitor;
 WebServerManager g_web;
 
+static bool initialRelayStateFromConfig() {
+  switch (g_config.relayRestoreBehavior) {
+    case RelayRestoreBehavior::AlwaysOn: return true;
+    case RelayRestoreBehavior::AlwaysOff: return false;
+    default: return g_config.lastRelayOn;
+  }
+}
+
+static void persistManualRelayState() {
+  g_config.lastRelayOn = g_relay.isOn();
+  g_cfgMgr.save(g_config);
+}
+
 void setup() {
   Serial.begin(115200);
   delay(200);
@@ -37,7 +50,8 @@ void setup() {
   g_eventLog.begin(g_config.eventLogMaxEntries);
   g_eventLog.add("boot", "Device booting");
 
-  g_relay.begin();
+  g_relay.begin(initialRelayStateFromConfig());
+  g_status.relayOn = g_relay.isOn();
   g_led.begin();
   g_button.begin();
 
@@ -57,10 +71,19 @@ void loop() {
   g_monitor.loop();
 
   g_status.uptimeSeconds = millis() / 1000;
+  g_status.wifiConnected = g_wifi.isConnected();
+  g_status.inCaptivePortal = g_wifi.inCaptivePortal();
+  g_status.relayOn = g_relay.isOn();
 
   if (g_button.shortPressed() && g_config.currentMode == DeviceMode::SmartPlug && g_config.manualButtonEnabled) {
     g_relay.toggle();
+    persistManualRelayState();
     g_eventLog.add("relay", g_relay.isOn() ? "Relay turned on by button" : "Relay turned off by button");
+  }
+
+  if (g_button.longPressed5s()) {
+    g_eventLog.add("system", "Reboot requested by button");
+    ESP.restart();
   }
 
   if (g_button.longPressed10s()) {
@@ -69,4 +92,3 @@ void loop() {
     ESP.restart();
   }
 }
-

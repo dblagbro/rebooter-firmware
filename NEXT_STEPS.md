@@ -18,9 +18,14 @@ Build a production-capable local-first Sonoff S31 firmware prototype for:
 
 ## Immediate Tasks
 
-1. Create the first Git checkpoint for the scaffold.
-2. Verify Sonoff S31 pin mapping against the actual board revision.
-3. Begin implementing missing v1 spec items: config schema, validation, retry limits, cooldown, OTA, and auth.
-4. Split watchdog logic into clearer Internet and Device watchdog modules.
+1. Verify Sonoff S31 pin mapping against the actual board revision.
+2. Split watchdog logic into clearer Internet and Device watchdog modules.
+3. Add OTA manager and local authenticated web UI.
+4. Add persisted event-log subset across reboot.
 5. Create first serial flash log in `docs/`.
 6. Validate relay, LED, and button behavior on isolated hardware before mains testing.
+
+## Completed Checkpoints
+
+- Initial scaffold committed and build-verified.
+- Added config schema/default validation, last-known-good config recovery, relay restore persistence, boot warm-up, Wi-Fi-loss watchdog pause, retry limits, and cooldown lockout.
