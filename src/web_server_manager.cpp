@@ -7,6 +7,7 @@
 #include "config_manager.h"
 #include "event_log.h"
 #include "monitor_engine.h"
+#include "ota_manager.h"
 
 static ESP8266WebServer server(80);
 static RelayController* sRelay = nullptr;
@@ -15,6 +16,7 @@ static RuntimeStatus* sStatus = nullptr;
 static ConfigManager* sCfgMgr = nullptr;
 static EventLog* sEventLog = nullptr;
 static MonitorEngine* sMonitor = nullptr;
+static OtaManager* sOta = nullptr;
 
 static String modeToString(DeviceMode mode) {
   switch (mode) {
@@ -89,7 +91,8 @@ static void sendConfigJson() {
 
 void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
                              RelayController* relay, ConfigManager* cfgMgr,
-                             EventLog* eventLog, MonitorEngine* monitor) {
+                             EventLog* eventLog, MonitorEngine* monitor,
+                             OtaManager* ota) {
   config_ = config;
   status_ = status;
   sConfig = config;
@@ -98,6 +101,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   sCfgMgr = cfgMgr;
   sEventLog = eventLog;
   sMonitor = monitor;
+  sOta = ota;
 
   server.on("/api/status", HTTP_GET, []() {
     JsonDocument doc;
@@ -201,6 +205,35 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     server.send(200, "application/json", "{\"ok\":true}");
   });
 
+
+  server.on("/api/system/reboot", HTTP_POST, []() {
+    sEventLog->add("system", "Reboot requested by API");
+    server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
+    delay(100);
+    ESP.restart();
+  });
+
+  server.on("/api/system/factory-reset", HTTP_POST, []() {
+    sEventLog->add("system", "Factory reset requested by API");
+    sCfgMgr->reset();
+    server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
+    delay(100);
+    ESP.restart();
+  });
+
+  server.on("/api/system/ota", HTTP_POST, []() {
+    if (sOta->hasError()) {
+      String body = "{\"ok\":false,\"error\":\"" + sOta->errorString() + "\"}";
+      server.send(500, "application/json", body);
+      return;
+    }
+    server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
+    delay(250);
+    ESP.restart();
+  }, []() {
+    HTTPUpload& upload = server.upload();
+    sOta->handleUpload(upload);
+  });
   server.on("/", HTTP_GET, []() {
     if (LittleFS.exists("/index.html")) {
       File f = LittleFS.open("/index.html", "r");
