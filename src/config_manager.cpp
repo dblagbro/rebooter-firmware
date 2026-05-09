@@ -108,6 +108,35 @@ static void validateConfig(AppConfig& config) {
   if (config.notifications.webhookUrl.length() > 256) config.notifications.webhookUrl = "";
   config.notifications.webhookAuthToken.trim();
   if (config.notifications.webhookAuthToken.length() > 128) config.notifications.webhookAuthToken = "";
+
+  for (auto& url : config.central.baseUrls) {
+    url.trim();
+  }
+  std::vector<String> cleanedBaseUrls;
+  for (auto url : config.central.baseUrls) {
+    if (url.isEmpty() || url.length() > 192) continue;
+    if (url.endsWith("/")) url.remove(url.length() - 1);
+    if (url.endsWith("/api/v1")) url.remove(url.length() - 7);
+    cleanedBaseUrls.push_back(url);
+    if (cleanedBaseUrls.size() >= 4) break;
+  }
+  if (cleanedBaseUrls.empty()) {
+    cleanedBaseUrls.push_back("https://www.voipguru.org/rebooter");
+    cleanedBaseUrls.push_back("https://www2.voipguru.org/rebooter");
+  }
+  config.central.baseUrls = cleanedBaseUrls;
+  config.central.enrollmentToken.trim();
+  if (config.central.enrollmentToken.length() > 128) config.central.enrollmentToken = "";
+  config.central.deviceAlias.trim();
+  if (config.central.deviceAlias.length() > 64) config.central.deviceAlias = "";
+  config.central.siteId.trim();
+  if (config.central.siteId.length() > 64) config.central.siteId = "";
+  config.central.deviceId.trim();
+  if (config.central.deviceId.length() > 96) config.central.deviceId = "";
+  config.central.deviceToken.trim();
+  if (config.central.deviceToken.length() > 256) config.central.deviceToken = "";
+  config.central.pollIntervalSeconds = clampU32(config.central.pollIntervalSeconds, 10, 3600);
+  config.central.heartbeatIntervalSeconds = clampU32(config.central.heartbeatIntervalSeconds, 10, 3600);
 }
 
 static bool loadFromPath(const char* path, AppConfig& out) {
@@ -169,6 +198,24 @@ static bool loadFromPath(const char* path, AppConfig& out) {
   out.notifications.sendOnRecovery = doc["notifications"]["send_on_recovery"] | out.notifications.sendOnRecovery;
   out.notifications.sendOnMaxCyclesReached = doc["notifications"]["send_on_max_cycles_reached"] | out.notifications.sendOnMaxCyclesReached;
   out.notifications.sendTestNotificationEnabled = doc["notifications"]["send_test_notification_enabled"] | out.notifications.sendTestNotificationEnabled;
+
+  out.central.enabled = doc["central"]["enabled"] | out.central.enabled;
+  out.central.baseUrls.clear();
+  if (doc["central"]["base_urls"].is<JsonArray>()) {
+    for (JsonVariant v : doc["central"]["base_urls"].as<JsonArray>()) {
+      out.central.baseUrls.push_back(String((const char*)v));
+    }
+  } else {
+    const String legacyBaseUrl = doc["central"]["base_url"] | "";
+    if (!legacyBaseUrl.isEmpty()) out.central.baseUrls.push_back(legacyBaseUrl);
+  }
+  out.central.enrollmentToken = doc["central"]["enrollment_token"] | out.central.enrollmentToken;
+  out.central.deviceAlias = doc["central"]["device_alias"] | out.central.deviceAlias;
+  out.central.siteId = doc["central"]["site_id"] | out.central.siteId;
+  out.central.deviceId = doc["central"]["device_id"] | out.central.deviceId;
+  out.central.deviceToken = doc["central"]["device_token"] | out.central.deviceToken;
+  out.central.pollIntervalSeconds = doc["central"]["poll_interval_seconds"] | out.central.pollIntervalSeconds;
+  out.central.heartbeatIntervalSeconds = doc["central"]["heartbeat_interval_seconds"] | out.central.heartbeatIntervalSeconds;
 
   validateConfig(out);
   return true;
@@ -247,6 +294,17 @@ bool ConfigManager::save(const AppConfig& config) {
   doc["notifications"]["send_on_recovery"] = clean.notifications.sendOnRecovery;
   doc["notifications"]["send_on_max_cycles_reached"] = clean.notifications.sendOnMaxCyclesReached;
   doc["notifications"]["send_test_notification_enabled"] = clean.notifications.sendTestNotificationEnabled;
+
+  doc["central"]["enabled"] = clean.central.enabled;
+  JsonArray centralBaseUrls = doc["central"]["base_urls"].to<JsonArray>();
+  for (const auto& url : clean.central.baseUrls) centralBaseUrls.add(url);
+  doc["central"]["enrollment_token"] = clean.central.enrollmentToken;
+  doc["central"]["device_alias"] = clean.central.deviceAlias;
+  doc["central"]["site_id"] = clean.central.siteId;
+  doc["central"]["device_id"] = clean.central.deviceId;
+  doc["central"]["device_token"] = clean.central.deviceToken;
+  doc["central"]["poll_interval_seconds"] = clean.central.pollIntervalSeconds;
+  doc["central"]["heartbeat_interval_seconds"] = clean.central.heartbeatIntervalSeconds;
 
   File f = LittleFS.open(TEMP_CONFIG_PATH, "w");
   if (!f) return false;

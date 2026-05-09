@@ -15,5 +15,10 @@ struct RuntimeStatus {
   uint32_t currentHourCycles = 0;
   uint32_t holdoffRemainingSeconds = 0;
   uint32_t cooldownRemainingSeconds = 0;
+  bool centralEnabled = false;
+  bool centralRegistered = false;
+  String centralState = "disabled";
+  String centralDeviceId = "";
+  uint32_t centralLastHeartbeatSeconds = 0;
 };
 

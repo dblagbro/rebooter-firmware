@@ -18,11 +18,13 @@ Build a production-capable local-first Sonoff S31 firmware prototype for:
 
 ## Immediate Tasks
 
-1. Verify Sonoff S31 pin mapping against the actual board revision.
-2. Split watchdog logic into clearer Internet and Device watchdog modules.
-3. Build the setup/login UI around the local auth API token flow.
-4. Create first serial flash log in `docs/`.
-5. Validate relay, LED, and button behavior on isolated hardware before mains testing.
+1. Review the new built-in local UI on the test device and iterate the UX.
+2. Add local browser flow for setting admin credentials and protecting OTA/config actions.
+3. Add central-management config fields to the device firmware.
+4. Hand off `docs/CENTRAL_SERVER_SPEC.md` and `docs/DEVICE_CENTRAL_INTEGRATION_NOTES.md` to the backend developer.
+5. Begin device-side registration and heartbeat client implementation.
+6. Verify Sonoff S31 pin mapping against the actual board revision.
+7. Split watchdog logic into clearer Internet and Device watchdog modules.
 
 ## Completed Checkpoints
 

@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <vector>
 
-static constexpr uint16_t CONFIG_SCHEMA_VERSION = 1;
+static constexpr uint16_t CONFIG_SCHEMA_VERSION = 2;
 
 enum class DeviceMode : uint8_t {
   SmartPlug = 0,
@@ -61,6 +61,21 @@ struct NotificationConfig {
   bool sendTestNotificationEnabled = true;
 };
 
+struct CentralConfig {
+  bool enabled = false;
+  std::vector<String> baseUrls = {
+    "https://www.voipguru.org/rebooter",
+    "https://www2.voipguru.org/rebooter"
+  };
+  String enrollmentToken = "";
+  String deviceAlias = "";
+  String siteId = "";
+  String deviceId = "";
+  String deviceToken = "";
+  uint32_t pollIntervalSeconds = 30;
+  uint32_t heartbeatIntervalSeconds = 60;
+};
+
 struct AppConfig {
   uint16_t schemaVersion = CONFIG_SCHEMA_VERSION;
   String deviceName = "Rebooter";
@@ -80,4 +95,5 @@ struct AppConfig {
   InternetWatchdogConfig internet;
   DeviceWatchdogConfig device;
   NotificationConfig notifications;
+  CentralConfig central;
 };

@@ -15,6 +15,7 @@
 #include "event_log.h"
 #include "ota_manager.h"
 #include "auth_manager.h"
+#include "central_client.h"
 
 AppConfig g_config;
 RuntimeStatus g_status;
@@ -29,6 +30,7 @@ MonitorEngine g_monitor;
 WebServerManager g_web;
 OtaManager g_ota;
 AuthManager g_auth;
+CentralClient g_central;
 
 static bool initialRelayStateFromConfig() {
   switch (g_config.relayRestoreBehavior) {
@@ -64,6 +66,7 @@ void setup() {
   g_monitor.begin(&g_config, &g_status, &g_relay, &g_notifier, &g_eventLog);
   g_ota.begin(&g_eventLog);
   g_auth.begin(&g_config, &g_eventLog);
+  g_central.begin(&g_config, &g_status, &g_cfgMgr, &g_eventLog);
   g_web.begin(&g_config, &g_status, &g_relay, &g_cfgMgr, &g_eventLog, &g_monitor, &g_ota, &g_auth);
 
   g_led.setPattern(LedPattern::SlowBlink);
@@ -75,6 +78,7 @@ void loop() {
   g_led.loop();
   g_web.loop();
   g_monitor.loop();
+  g_central.loop();
 
   g_status.uptimeSeconds = millis() / 1000;
   g_status.wifiConnected = g_wifi.isConnected();
