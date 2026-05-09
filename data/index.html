@@ -1,5 +1,5 @@
-﻿<!doctype html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,13 +7,131 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <main>
-    <h1>Rebooter</h1>
-    <section id="status"></section>
-    <button onclick="relayOn()">Relay On</button>
-    <button onclick="relayOff()">Relay Off</button>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1>Rebooter</h1>
+        <p id="connection-note">Connecting to device...</p>
+      </div>
+      <div class="status-pill" id="health-pill">Unknown</div>
+    </header>
+
+    <section class="band grid-two">
+      <article class="panel">
+        <h2>Device</h2>
+        <dl class="kv">
+          <div><dt>Name</dt><dd id="device-name">-</dd></div>
+          <div><dt>Mode</dt><dd id="device-mode">-</dd></div>
+          <div><dt>Relay</dt><dd id="relay-state">-</dd></div>
+          <div><dt>Wi-Fi</dt><dd id="wifi-state">-</dd></div>
+          <div><dt>IP</dt><dd id="device-ip">-</dd></div>
+          <div><dt>Uptime</dt><dd id="uptime">-</dd></div>
+        </dl>
+      </article>
+
+      <article class="panel">
+        <h2>Relay</h2>
+        <div class="actions">
+          <button id="relay-on">Turn On</button>
+          <button id="relay-off">Turn Off</button>
+          <button id="relay-toggle">Toggle</button>
+          <button id="refresh-status" class="secondary">Refresh</button>
+        </div>
+        <p class="hint">Relay commands require auth only after you set an admin password.</p>
+      </article>
+    </section>
+
+    <section class="band grid-two">
+      <article class="panel">
+        <h2>Provisioning</h2>
+        <form id="config-form" class="stack">
+          <label>
+            <span>Device Name</span>
+            <input id="cfg-device-name" name="device_name" maxlength="32">
+          </label>
+
+          <label>
+            <span>Mode</span>
+            <select id="cfg-mode" name="current_mode">
+              <option value="smart_plug">Smart Plug</option>
+              <option value="internet_watchdog">Internet Watchdog</option>
+              <option value="device_watchdog">Device Watchdog</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Relay Restore</span>
+            <select id="cfg-restore" name="relay_restore_behavior">
+              <option value="restore_previous">Restore Previous</option>
+              <option value="always_on">Always On</option>
+              <option value="always_off">Always Off</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Monitor Interval (sec)</span>
+            <input id="cfg-monitor-interval" name="monitor_interval_seconds" type="number" min="2" max="3600">
+          </label>
+
+          <label>
+            <span>Boot Warm-up (sec)</span>
+            <input id="cfg-boot-warmup" name="boot_warmup_seconds" type="number" min="0" max="600">
+          </label>
+
+          <label class="checkbox-row">
+            <input id="cfg-manual-button" name="manual_button_enabled" type="checkbox">
+            <span>Enable short button press for relay in Smart Plug mode</span>
+          </label>
+
+          <label>
+            <span>Admin Username</span>
+            <input id="cfg-admin-username" name="admin_username" maxlength="32" placeholder="admin">
+          </label>
+
+          <label>
+            <span>Admin Password</span>
+            <input id="cfg-admin-password" name="admin_password" type="password" minlength="8" maxlength="64" placeholder="Leave blank to keep current">
+          </label>
+
+          <div class="actions">
+            <button type="submit">Save Settings</button>
+          </div>
+        </form>
+      </article>
+
+      <article class="panel">
+        <h2>Firmware Update</h2>
+        <form id="ota-form" class="stack">
+          <label>
+            <span>Firmware Bin</span>
+            <input id="ota-file" type="file" accept=".bin,application/octet-stream">
+          </label>
+          <div class="actions">
+            <button type="submit">Upload Firmware</button>
+          </div>
+        </form>
+        <div class="progress-wrap">
+          <progress id="ota-progress" max="100" value="0"></progress>
+          <span id="ota-progress-label">Idle</span>
+        </div>
+        <p class="hint">This uses the device's local OTA endpoint. No serial cable needed after bootstrap.</p>
+      </article>
+    </section>
+
+    <section class="band">
+      <article class="panel">
+        <h2>Events</h2>
+        <pre id="events-view">Loading events...</pre>
+      </article>
+    </section>
+
+    <section class="band">
+      <article class="panel">
+        <h2>Message Log</h2>
+        <pre id="message-log">Ready.</pre>
+      </article>
+    </section>
   </main>
   <script src="/app.js"></script>
 </body>
 </html>
-
