@@ -1,5 +1,8 @@
 #include <Arduino.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <WiFiClientSecureBearSSL.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include "web_server_manager.h"
@@ -157,6 +160,88 @@ static MonitorEngine* sMonitor = nullptr;
 static OtaManager* sOta = nullptr;
 static AuthManager* sAuth = nullptr;
 
+static bool parseBaseUrl(const String& baseUrl, String& host, uint16_t& port, String& rootPath) {
+  String url = baseUrl;
+  url.trim();
+  if (url.endsWith("/")) url.remove(url.length() - 1);
+
+  port = 443;
+  if (url.startsWith("https://")) {
+    url.remove(0, 8);
+  } else if (url.startsWith("http://")) {
+    url.remove(0, 7);
+    port = 80;
+  } else {
+    return false;
+  }
+
+  const int slash = url.indexOf('/');
+  String hostPort = slash >= 0 ? url.substring(0, slash) : url;
+  rootPath = slash >= 0 ? url.substring(slash) : "/";
+  if (rootPath.isEmpty()) rootPath = "/";
+
+  const int colon = hostPort.indexOf(':');
+  if (colon >= 0) {
+    host = hostPort.substring(0, colon);
+    port = static_cast<uint16_t>(hostPort.substring(colon + 1).toInt());
+  } else {
+    host = hostPort;
+  }
+
+  return !host.isEmpty() && port > 0;
+}
+
+static void addCentralDiagnostic(JsonObject target, const String& baseUrl) {
+  target["base_url"] = baseUrl;
+  target["free_heap"] = ESP.getFreeHeap();
+
+  String host;
+  String rootPath;
+  uint16_t port = 0;
+  if (!parseBaseUrl(baseUrl, host, port, rootPath)) {
+    target["parse_ok"] = false;
+    return;
+  }
+
+  target["parse_ok"] = true;
+  target["host"] = host;
+  target["port"] = port;
+  target["root_path"] = rootPath;
+
+  IPAddress resolved;
+  const bool dnsOk = WiFi.hostByName(host.c_str(), resolved);
+  target["dns_ok"] = dnsOk;
+  target["resolved_ip"] = dnsOk ? resolved.toString() : "";
+
+  WiFiClient tcp;
+  tcp.setTimeout(5000);
+  const bool tcpOk = dnsOk ? tcp.connect(resolved, port) : tcp.connect(host.c_str(), port);
+  target["tcp_connect_ok"] = tcpOk;
+  if (tcpOk) tcp.stop();
+
+  std::unique_ptr<BearSSL::WiFiClientSecure> secure(new BearSSL::WiFiClientSecure());
+  secure->setInsecure();
+  secure->setBufferSizes(512, 512);
+  HTTPClient http;
+  const String versionUrl = baseUrl + (baseUrl.endsWith("/") ? "" : "/") + "api/v1/version";
+  const bool beginOk = http.begin(*secure, versionUrl);
+  target["https_begin_ok"] = beginOk;
+  target["version_url"] = versionUrl;
+  if (!beginOk) {
+    return;
+  }
+
+  const int code = http.GET();
+  target["https_code"] = code;
+  if (code < 0) {
+    target["https_error"] = HTTPClient::errorToString(code);
+  } else {
+    const String body = http.getString();
+    target["https_body"] = body.substring(0, min(static_cast<int>(body.length()), 180));
+  }
+  http.end();
+}
+
 static void serveFileOrFallback(const char* path, const char* contentType, PGM_P fallback) {
   if (LittleFS.exists(path)) {
     File f = LittleFS.open(path, "r");
@@ -299,6 +384,26 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
 
   server.on("/api/events", HTTP_GET, []() {
     server.send(200, "application/json", sEventLog->asJson());
+  });
+
+  server.on("/api/system/central-diagnostic", HTTP_GET, []() {
+    if (!requireAuth()) return;
+
+    JsonDocument doc;
+    doc["wifi_connected"] = sStatus->wifiConnected;
+    doc["local_ip"] = WiFi.localIP().toString();
+    doc["mac_address"] = WiFi.macAddress();
+    doc["free_heap"] = ESP.getFreeHeap();
+
+    JsonArray diagnostics = doc["targets"].to<JsonArray>();
+    for (const auto& baseUrl : sConfig->central.baseUrls) {
+      JsonObject entry = diagnostics.add<JsonObject>();
+      addCentralDiagnostic(entry, baseUrl);
+    }
+
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
   });
 
   server.on("/api/relay/on", HTTP_POST, []() {
