@@ -36,17 +36,18 @@ void blinkLed(uint32_t intervalMs) {
   }
 }
 
-String firmwareUrl() {
-  return String(BootstrapConfig::FIRMWARE_BASE_URL) + BootstrapConfig::FIRMWARE_FILENAME;
-}
-
 void printBanner() {
   Serial.println();
   Serial.println("Rebooter bootstrap OTA loader");
   Serial.print("Version: ");
   Serial.println(BootstrapConfig::CURRENT_VERSION);
-  Serial.print("Target URL: ");
-  Serial.println(firmwareUrl());
+  Serial.println("Target URLs:");
+  for (size_t i = 0; i < BootstrapConfig::FIRMWARE_URL_COUNT; ++i) {
+    Serial.print("  ");
+    Serial.print(i + 1);
+    Serial.print(". ");
+    Serial.println(BootstrapConfig::FIRMWARE_URLS[i]);
+  }
 }
 
 void beginWifiConnection() {
@@ -113,34 +114,36 @@ void configureUpdateCallbacks() {
 void attemptHttpUpdate() {
   g_updateAttempts++;
   Serial.printf("Starting update attempt %u of %u\n", g_updateAttempts, BootstrapConfig::MAX_UPDATE_ATTEMPTS);
-
-  std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
-  client->setInsecure();
-
   ESPhttpUpdate.rebootOnUpdate(true);
   ESPhttpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
 
-  const String url = firmwareUrl();
-  Serial.print("Fetching firmware from: ");
-  Serial.println(url);
+  for (size_t i = 0; i < BootstrapConfig::FIRMWARE_URL_COUNT; ++i) {
+    const String url = BootstrapConfig::FIRMWARE_URLS[i];
+    std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
+    client->setInsecure();
 
-  const t_httpUpdate_return result = ESPhttpUpdate.update(*client, url, BootstrapConfig::CURRENT_VERSION);
+    Serial.print("Fetching firmware from: ");
+    Serial.println(url);
 
-  switch (result) {
-    case HTTP_UPDATE_FAILED:
-      Serial.printf("Update failed: %s\n", ESPhttpUpdate.getLastErrorString().c_str());
-      g_state = BootstrapState::UpdateFailed;
-      g_nextUpdateAttemptAt = millis() + BootstrapConfig::UPDATE_RETRY_DELAY_MS;
-      break;
-    case HTTP_UPDATE_NO_UPDATES:
-      Serial.println("Server reported no update. Bootstrap staying online.");
-      g_state = BootstrapState::Idle;
-      break;
-    case HTTP_UPDATE_OK:
-      Serial.println("Update installed. Device should reboot now.");
-      g_state = BootstrapState::Idle;
-      break;
+    const t_httpUpdate_return result = ESPhttpUpdate.update(*client, url, BootstrapConfig::CURRENT_VERSION);
+
+    switch (result) {
+      case HTTP_UPDATE_FAILED:
+        Serial.printf("Update failed from %s: %s\n", url.c_str(), ESPhttpUpdate.getLastErrorString().c_str());
+        break;
+      case HTTP_UPDATE_NO_UPDATES:
+        Serial.println("Server reported no update. Bootstrap staying online.");
+        g_state = BootstrapState::Idle;
+        return;
+      case HTTP_UPDATE_OK:
+        Serial.println("Update installed. Device should reboot now.");
+        g_state = BootstrapState::Idle;
+        return;
+    }
   }
+
+  g_state = BootstrapState::UpdateFailed;
+  g_nextUpdateAttemptAt = millis() + BootstrapConfig::UPDATE_RETRY_DELAY_MS;
 }
 
 void maybeRetry() {

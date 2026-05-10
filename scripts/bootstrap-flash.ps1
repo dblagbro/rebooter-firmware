@@ -16,6 +16,24 @@ $pioExe = "C:\Program Files\Python312\Scripts\pio.exe"
 $firmwarePath = Join-Path $repoRoot ".pio\build\sonoff_s31_bootstrap\firmware.bin"
 $buildDir = Join-Path $repoRoot ".pio\build\sonoff_s31_bootstrap"
 $ldFile = Join-Path $buildDir "ld\local.eagle.app.v6.common.ld"
+$bootstrapConfigPath = Join-Path $repoRoot "include\bootstrap_config.h"
+
+function Get-BootstrapFirmwareUrls {
+    if (-not (Test-Path $bootstrapConfigPath)) {
+        return @()
+    }
+
+    $content = Get-Content $bootstrapConfigPath
+    $urls = @()
+    foreach ($line in $content) {
+        if ($line -match 'PRIMARY_FIRMWARE_URL\[\] = "([^"]+)"') {
+            $urls += $matches[1]
+        } elseif ($line -match 'SECONDARY_FIRMWARE_URL\[\] = "([^"]+)"') {
+            $urls += $matches[1]
+        }
+    }
+    return $urls
+}
 
 function Write-Section([string]$Title) {
     Write-Host ""
@@ -39,6 +57,13 @@ function Show-State {
     Write-Host "Linker script:    $ldFile"
     Write-Host "Firmware exists:  $([bool](Test-Path $firmwarePath))"
     Write-Host "LD script exists: $([bool](Test-Path $ldFile))"
+    $urls = Get-BootstrapFirmwareUrls
+    if ($urls.Count -gt 0) {
+        Write-Host "Bootstrap OTA URLs:"
+        foreach ($url in $urls) {
+            Write-Host "  - $url"
+        }
+    }
     if ($BuildOnly) {
         Write-Host "Mode:             build-only"
     } elseif ($FlashOnly) {
