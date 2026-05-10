@@ -12,6 +12,7 @@
 namespace {
 static constexpr uint32_t INITIAL_RETRY_DELAY_MS = 30000;
 static constexpr uint32_t MAX_RETRY_DELAY_MS = 300000;
+static constexpr int HTTP_BEGIN_FAILED = -1000;
 
 String summarizeResponse(const String& response, size_t maxLen = 180) {
   String out = response;
@@ -22,6 +23,22 @@ String summarizeResponse(const String& response, size_t maxLen = 180) {
     out = out.substring(0, maxLen) + "...";
   }
   return out;
+}
+
+String describeTransportFailure(const String& url, int code) {
+  String message = url;
+  message += " -> ";
+  message += String(code);
+  if (code == HTTP_BEGIN_FAILED) {
+    message += " (http_begin_failed)";
+  } else if (code < 0) {
+    message += " (";
+    message += HTTPClient::errorToString(code);
+    message += ")";
+  }
+  message += ", free_heap=";
+  message += ESP.getFreeHeap();
+  return message;
 }
 
 void clearCentralRegistration(AppConfig* config, RuntimeStatus* status, ConfigManager* cfgMgr) {
@@ -89,13 +106,17 @@ bool CentralClient::postWithFallback(const String& path, const String& authToken
   const size_t count = config_->central.baseUrls.size();
   if (count == 0) return false;
 
+  String failureSummary;
   for (size_t i = 0; i < count; ++i) {
     const String baseUrl = config_->central.baseUrls[i];
     std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
     client->setInsecure();
+    client->setBufferSizes(512, 512);
     HTTPClient http;
     const String url = buildApiUrl(baseUrl, path);
     if (!http.begin(*client, url)) {
+      httpCode = HTTP_BEGIN_FAILED;
+      failureSummary = describeTransportFailure(url, httpCode);
       continue;
     }
 
@@ -114,10 +135,11 @@ bool CentralClient::postWithFallback(const String& path, const String& authToken
     if (httpCode >= 500) {
       continue;
     }
+
+    failureSummary = describeTransportFailure(url, httpCode);
   }
 
-  httpCode = -1;
-  responseBody = "";
+  responseBody = failureSummary;
   selectedBaseUrl = "";
   return false;
 }
@@ -129,13 +151,17 @@ bool CentralClient::getWithFallback(const String& path, const String& authToken,
   const size_t count = config_->central.baseUrls.size();
   if (count == 0) return false;
 
+  String failureSummary;
   for (size_t i = 0; i < count; ++i) {
     const String baseUrl = config_->central.baseUrls[i];
     std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
     client->setInsecure();
+    client->setBufferSizes(512, 512);
     HTTPClient http;
     const String url = buildApiUrl(baseUrl, path);
     if (!http.begin(*client, url)) {
+      httpCode = HTTP_BEGIN_FAILED;
+      failureSummary = describeTransportFailure(url, httpCode);
       continue;
     }
 
@@ -152,10 +178,11 @@ bool CentralClient::getWithFallback(const String& path, const String& authToken,
     if (httpCode >= 500) {
       continue;
     }
+
+    failureSummary = describeTransportFailure(url, httpCode);
   }
 
-  httpCode = -1;
-  responseBody = "";
+  responseBody = failureSummary;
   selectedBaseUrl = "";
   return false;
 }
@@ -190,7 +217,10 @@ bool CentralClient::registerDevice() {
   String selectedBaseUrl;
   int code = -1;
   if (!postWithFallback("/device/register", "", body, response, code, selectedBaseUrl)) {
-    if (eventLog_) eventLog_->add("central", "Device registration transport failed");
+    const String detail = response.isEmpty() ? String("unknown transport error") : summarizeResponse(response);
+    Serial.print("Central register transport failed: ");
+    Serial.println(detail);
+    if (eventLog_) eventLog_->add("central", "Device registration transport failed: " + detail);
     setState("register_transport_failed");
     return false;
   }
@@ -273,6 +303,10 @@ bool CentralClient::sendHeartbeat() {
   String selectedBaseUrl;
   int code = -1;
   if (!postWithFallback("/device/heartbeat", config_->central.deviceToken, body, response, code, selectedBaseUrl)) {
+    const String detail = response.isEmpty() ? String("unknown transport error") : summarizeResponse(response);
+    Serial.print("Central heartbeat transport failed: ");
+    Serial.println(detail);
+    if (eventLog_) eventLog_->add("central", "Heartbeat transport failed: " + detail);
     setState("heartbeat_transport_failed");
     scheduleRetry(false);
     return false;
@@ -324,6 +358,10 @@ bool CentralClient::pollCommands() {
   int code = -1;
   if (!getWithFallback("/device/commands?device_id=" + config_->central.deviceId,
                        config_->central.deviceToken, response, code, selectedBaseUrl)) {
+    const String detail = response.isEmpty() ? String("unknown transport error") : summarizeResponse(response);
+    Serial.print("Central command poll transport failed: ");
+    Serial.println(detail);
+    if (eventLog_) eventLog_->add("central", "Command poll transport failed: " + detail);
     setState("poll_transport_failed");
     scheduleRetry(false);
     return false;
