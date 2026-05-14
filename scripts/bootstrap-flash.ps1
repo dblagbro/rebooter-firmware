@@ -1,6 +1,6 @@
 param(
     [string]$ComPort = "COM11",
-    [int]$Baud = 19200,
+    [int]$Baud = 115200,
     [int]$FlashAttempts = 5,
     [switch]$SkipBuild,
     [switch]$BuildOnly,
@@ -17,6 +17,7 @@ $firmwarePath = Join-Path $repoRoot ".pio\build\sonoff_s31_bootstrap\firmware.bi
 $buildDir = Join-Path $repoRoot ".pio\build\sonoff_s31_bootstrap"
 $ldFile = Join-Path $buildDir "ld\local.eagle.app.v6.common.ld"
 $bootstrapConfigPath = Join-Path $repoRoot "include\bootstrap_config.h"
+$provisioningConfigPath = Join-Path $repoRoot "include\provisioning_config.h"
 
 function Get-BootstrapFirmwareUrls {
     if (-not (Test-Path $bootstrapConfigPath)) {
@@ -33,6 +34,20 @@ function Get-BootstrapFirmwareUrls {
         }
     }
     return $urls
+}
+
+function Get-SetupApPassword {
+    if (-not (Test-Path $provisioningConfigPath)) {
+        return $null
+    }
+
+    foreach ($line in (Get-Content $provisioningConfigPath)) {
+        if ($line -match 'SETUP_AP_PASSWORD\[\] = "([^"]+)"') {
+            return $matches[1]
+        }
+    }
+
+    return $null
 }
 
 function Write-Section([string]$Title) {
@@ -63,6 +78,13 @@ function Show-State {
         foreach ($url in $urls) {
             Write-Host "  - $url"
         }
+    }
+    $setupPassword = Get-SetupApPassword
+    if ($setupPassword) {
+        Write-Host "Bootstrap setup AP:"
+        Write-Host "  - SSID pattern: Rebooter-Setup-<chipid>"
+        Write-Host "  - Password:     $setupPassword"
+        Write-Host "  - Portal:       http://192.168.4.1"
     }
     if ($BuildOnly) {
         Write-Host "Mode:             build-only"
@@ -133,6 +155,7 @@ function Ensure-FirmwareExists {
     Write-Host "Bootstrap firmware ready."
     Write-Host "Path: $($item.FullName)"
     Write-Host "Size: $($item.Length) bytes"
+    Write-Host "Expected main OTA payload: stable/latest.bin should currently be the safe 0.1.17 image." -ForegroundColor Yellow
 }
 
 function Flash-Bootstrap {

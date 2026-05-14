@@ -218,6 +218,27 @@ Suggested channels:
 - `beta`
 - `stable`
 
+### Firmware Hosting Resilience
+
+Firmware delivery should not depend forever on one root-level hosted file or one business-operated server.
+
+Planned direction:
+
+1. Move canonical hosted firmware delivery under the managed `/rebooter/` platform tree.
+2. Let device firmware try an ordered list of firmware download locations rather than a single hardcoded URL.
+3. Keep at least one fallback firmware location operationally independent from the main business infrastructure so recovery remains possible if the primary service is unavailable or the project is no longer actively operated.
+4. Evaluate candidate fallback hosts for OTA suitability, including:
+   - stable direct-download URLs
+   - file size limits
+   - rate limiting behavior
+   - compatibility with ESP8266 fetch/update behavior
+   - long-term durability
+5. Separate the hosting strategy for:
+   - bootstrap/stage-1 firmware
+   - stable production firmware
+   - development/canary firmware
+   - disaster-recovery fallback firmware
+
 ## Central Server Scope
 
 ## Phase 2A: Core Central Hub

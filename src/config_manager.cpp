@@ -5,6 +5,9 @@
 
 static const char* LAST_KNOWN_GOOD_PATH = "/config.lkg.json";
 static const char* TEMP_CONFIG_PATH = "/config.tmp";
+static const char* RECOVERY_BOOT_FLAG_PATH = "/recovery.flag";
+static const char* BOOT_STATE_PATH = "/bootstate.json";
+static constexpr uint8_t AUTO_RECOVERY_BOOT_THRESHOLD = 2;
 
 static uint32_t clampU32(uint32_t value, uint32_t minValue, uint32_t maxValue) {
   if (value < minValue) return minValue;
@@ -137,11 +140,22 @@ static void validateConfig(AppConfig& config) {
   if (config.central.deviceToken.length() > 256) config.central.deviceToken = "";
   config.central.pollIntervalSeconds = clampU32(config.central.pollIntervalSeconds, 10, 3600);
   config.central.heartbeatIntervalSeconds = clampU32(config.central.heartbeatIntervalSeconds, 10, 3600);
+
+  config.power.sampleRateHz = static_cast<uint8_t>(clampU32(config.power.sampleRateHz, 1, 2));
+  config.power.batchSeconds = static_cast<uint16_t>(clampU32(config.power.batchSeconds, 10, 60));
 }
 
 static bool loadFromPath(const char* path, AppConfig& out) {
   File f = LittleFS.open(path, "r");
   if (!f) return false;
+
+  const size_t maxSafeBytes = 8192;
+  const size_t fileSize = f.size();
+  if (fileSize == 0 || fileSize > maxSafeBytes) {
+    f.close();
+    LittleFS.remove(path);
+    return false;
+  }
 
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, f);
@@ -217,38 +231,17 @@ static bool loadFromPath(const char* path, AppConfig& out) {
   out.central.pollIntervalSeconds = doc["central"]["poll_interval_seconds"] | out.central.pollIntervalSeconds;
   out.central.heartbeatIntervalSeconds = doc["central"]["heartbeat_interval_seconds"] | out.central.heartbeatIntervalSeconds;
 
+  out.power.enabled = doc["power"]["enabled"] | out.power.enabled;
+  out.power.sampleRateHz = doc["power"]["sample_rate_hz"] | out.power.sampleRateHz;
+  out.power.batchSeconds = doc["power"]["batch_seconds"] | out.power.batchSeconds;
+  out.power.includeWifiStats = doc["power"]["include_wifi_stats"] | out.power.includeWifiStats;
+  out.power.includeFrequency = doc["power"]["include_frequency"] | out.power.includeFrequency;
+
   validateConfig(out);
   return true;
 }
 
-bool ConfigManager::begin() {
-  return true;
-}
-
-bool ConfigManager::load(AppConfig& out) {
-  if (!LittleFS.exists(configPath_)) {
-    setDefaultTargets(out);
-    validateConfig(out);
-    return save(out);
-  }
-
-  if (loadFromPath(configPath_, out)) return true;
-  if (LittleFS.exists(LAST_KNOWN_GOOD_PATH) && loadFromPath(LAST_KNOWN_GOOD_PATH, out)) {
-    save(out);
-    return true;
-  }
-
-  out = AppConfig();
-  setDefaultTargets(out);
-  validateConfig(out);
-  return save(out);
-}
-
-bool ConfigManager::save(const AppConfig& config) {
-  AppConfig clean = config;
-  validateConfig(clean);
-
-  JsonDocument doc;
+static void writeConfigDocument(JsonDocument& doc, const AppConfig& clean) {
   doc["schema_version"] = clean.schemaVersion;
   doc["device_name"] = clean.deviceName;
   doc["admin_username"] = clean.adminUsername;
@@ -306,10 +299,68 @@ bool ConfigManager::save(const AppConfig& config) {
   doc["central"]["poll_interval_seconds"] = clean.central.pollIntervalSeconds;
   doc["central"]["heartbeat_interval_seconds"] = clean.central.heartbeatIntervalSeconds;
 
-  File f = LittleFS.open(TEMP_CONFIG_PATH, "w");
+  doc["power"]["enabled"] = clean.power.enabled;
+  doc["power"]["sample_rate_hz"] = clean.power.sampleRateHz;
+  doc["power"]["batch_seconds"] = clean.power.batchSeconds;
+  doc["power"]["include_wifi_stats"] = clean.power.includeWifiStats;
+  doc["power"]["include_frequency"] = clean.power.includeFrequency;
+}
+
+static bool writeConfigToPath(const char* path, const AppConfig& config) {
+  AppConfig clean = config;
+  validateConfig(clean);
+
+  JsonDocument doc;
+  writeConfigDocument(doc, clean);
+
+  File f = LittleFS.open(path, "w");
   if (!f) return false;
   serializeJsonPretty(doc, f);
   f.close();
+  return true;
+}
+
+static void overlayRecoveryPreservedState(AppConfig& restored, const AppConfig& current) {
+  restored.lastRelayOn = current.lastRelayOn;
+
+  restored.central.enabled = current.central.enabled;
+  restored.central.baseUrls = current.central.baseUrls;
+  restored.central.enrollmentToken = current.central.enrollmentToken;
+  restored.central.deviceAlias = current.central.deviceAlias;
+  restored.central.siteId = current.central.siteId;
+  restored.central.deviceId = current.central.deviceId;
+  restored.central.deviceToken = current.central.deviceToken;
+  restored.central.pollIntervalSeconds = current.central.pollIntervalSeconds;
+  restored.central.heartbeatIntervalSeconds = current.central.heartbeatIntervalSeconds;
+}
+
+bool ConfigManager::begin() {
+  return true;
+}
+
+bool ConfigManager::load(AppConfig& out) {
+  if (!LittleFS.exists(configPath_)) {
+    setDefaultTargets(out);
+    validateConfig(out);
+    return save(out);
+  }
+
+  if (loadFromPath(configPath_, out)) return true;
+  if (LittleFS.exists(LAST_KNOWN_GOOD_PATH) && loadFromPath(LAST_KNOWN_GOOD_PATH, out)) {
+    save(out);
+    return true;
+  }
+
+  out = AppConfig();
+  setDefaultTargets(out);
+  validateConfig(out);
+  return save(out);
+}
+
+bool ConfigManager::save(const AppConfig& config) {
+  AppConfig clean = config;
+  validateConfig(clean);
+  if (!writeConfigToPath(TEMP_CONFIG_PATH, clean)) return false;
 
   if (LittleFS.exists(LAST_KNOWN_GOOD_PATH)) LittleFS.remove(LAST_KNOWN_GOOD_PATH);
   if (LittleFS.exists(configPath_)) LittleFS.rename(configPath_, LAST_KNOWN_GOOD_PATH);
@@ -321,5 +372,114 @@ bool ConfigManager::reset() {
   if (LittleFS.exists(configPath_)) LittleFS.remove(configPath_);
   if (LittleFS.exists(LAST_KNOWN_GOOD_PATH)) LittleFS.remove(LAST_KNOWN_GOOD_PATH);
   if (LittleFS.exists(TEMP_CONFIG_PATH)) LittleFS.remove(TEMP_CONFIG_PATH);
+  if (LittleFS.exists(BOOT_STATE_PATH)) LittleFS.remove(BOOT_STATE_PATH);
+  return true;
+}
+
+bool ConfigManager::restoreLastKnownGood(AppConfig& out) {
+  if (!LittleFS.exists(LAST_KNOWN_GOOD_PATH)) return false;
+
+  AppConfig current = out;
+  AppConfig restored = AppConfig();
+  if (!loadFromPath(LAST_KNOWN_GOOD_PATH, restored)) return false;
+
+  // Recovery should roll back behavioral settings, but keep the freshest
+  // low-risk operational identity/state from the currently running config.
+  overlayRecoveryPreservedState(restored, current);
+  validateConfig(restored);
+
+  if (!writeConfigToPath(TEMP_CONFIG_PATH, restored)) return false;
+  if (LittleFS.exists(configPath_)) LittleFS.remove(configPath_);
+  if (!LittleFS.rename(TEMP_CONFIG_PATH, configPath_)) return false;
+
+  out = restored;
+  return true;
+}
+
+BootHealthSnapshot ConfigManager::beginBootSession() {
+  struct StoredBootState {
+    uint8_t consecutiveUnhealthyBoots = 0;
+    bool bootInProgress = false;
+  };
+
+  auto loadBootState = []() {
+    StoredBootState state;
+    File file = LittleFS.open(BOOT_STATE_PATH, "r");
+    if (!file) return state;
+
+    if (file.size() == 0 || file.size() > 256) {
+      file.close();
+      LittleFS.remove(BOOT_STATE_PATH);
+      return state;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, file) == DeserializationError::Ok) {
+      state.consecutiveUnhealthyBoots = doc["consecutive_unhealthy_boots"] | 0;
+      state.bootInProgress = doc["boot_in_progress"] | false;
+    }
+
+    file.close();
+    return state;
+  };
+
+  auto saveBootState = [](const StoredBootState& state) {
+    JsonDocument doc;
+    doc["consecutive_unhealthy_boots"] = state.consecutiveUnhealthyBoots;
+    doc["boot_in_progress"] = state.bootInProgress;
+
+    File file = LittleFS.open(BOOT_STATE_PATH, "w");
+    if (!file) return false;
+    serializeJson(doc, file);
+    file.close();
+    return true;
+  };
+
+  StoredBootState state = loadBootState();
+  BootHealthSnapshot snapshot;
+
+  if (state.bootInProgress) {
+    snapshot.previousBootIncomplete = true;
+    if (state.consecutiveUnhealthyBoots < UINT8_MAX) {
+      state.consecutiveUnhealthyBoots++;
+    }
+  } else {
+    state.consecutiveUnhealthyBoots = 0;
+  }
+
+  snapshot.consecutiveUnhealthyBoots = state.consecutiveUnhealthyBoots;
+  if (state.consecutiveUnhealthyBoots >= AUTO_RECOVERY_BOOT_THRESHOLD) {
+    snapshot.autoRecoveryTriggered = true;
+    state.consecutiveUnhealthyBoots = 0;
+  }
+
+  state.bootInProgress = true;
+  saveBootState(state);
+  return snapshot;
+}
+
+bool ConfigManager::markBootHealthy() {
+  JsonDocument doc;
+  doc["consecutive_unhealthy_boots"] = 0;
+  doc["boot_in_progress"] = false;
+
+  File file = LittleFS.open(BOOT_STATE_PATH, "w");
+  if (!file) return false;
+  serializeJson(doc, file);
+  file.close();
+  return true;
+}
+
+bool ConfigManager::requestRecoveryBoot() {
+  File f = LittleFS.open(RECOVERY_BOOT_FLAG_PATH, "w");
+  if (!f) return false;
+  f.print("recovery");
+  f.close();
+  return true;
+}
+
+bool ConfigManager::consumeRecoveryBootRequest() {
+  if (!LittleFS.exists(RECOVERY_BOOT_FLAG_PATH)) return false;
+  LittleFS.remove(RECOVERY_BOOT_FLAG_PATH);
   return true;
 }
