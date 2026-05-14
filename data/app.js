@@ -26,17 +26,36 @@ function setHealthPill(health) {
   pill.className = `status-pill ${String(health || 'unknown').replace(/_/g, '-')}`;
 }
 
+function splitTargets(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function renderModeSections() {
+  const mode = $('cfg-mode').value;
+  $('cfg-internet-section').classList.toggle('hidden', mode !== 'internet_watchdog');
+  $('cfg-device-section').classList.toggle('hidden', mode !== 'device_watchdog');
+}
+
 function renderStatus() {
   if (!state.status) return;
   $('device-name').textContent = state.status.device_name || '-';
+  $('firmware-version').textContent = state.status.firmware_version || '-';
   $('device-mode').textContent = state.status.mode || '-';
   $('relay-state').textContent = state.status.relay_on ? 'On' : 'Off';
   $('wifi-state').textContent = state.status.wifi_connected ? 'Connected' : 'Disconnected';
   $('device-ip').textContent = window.location.host || '-';
+  $('setup-ap').textContent = state.status.setup_ap_name || '-';
   $('uptime').textContent = formatUptime(state.status.uptime_seconds);
-  $('connection-note').textContent = state.status.wifi_connected
-    ? 'Device is online and serving the local control plane.'
-    : 'Device is up but Wi-Fi is not currently connected.';
+  if (state.status.in_captive_portal) {
+    $('connection-note').textContent = `Setup AP is active. Join ${state.status.setup_ap_name || 'the Rebooter setup network'} and browse to 192.168.4.1 to provision Wi-Fi. The setup network is open.`;
+  } else {
+    $('connection-note').textContent = state.status.wifi_connected
+      ? 'Device is online and serving the local control plane.'
+      : 'Device is up but Wi-Fi is not currently connected.';
+  }
   setHealthPill(state.status.health_state);
 }
 
@@ -49,10 +68,40 @@ function renderConfig() {
   $('cfg-boot-warmup').value = state.config.boot_warmup_seconds ?? 30;
   $('cfg-manual-button').checked = !!state.config.manual_button_enabled;
   $('cfg-admin-username').value = state.config.admin_username || 'admin';
+
+  const internet = state.config.internet || {};
+  $('cfg-internet-targets').value = Array.isArray(internet.targets) ? internet.targets.join('\n') : '';
+  $('cfg-internet-failure-threshold').value = internet.failure_threshold_seconds ?? 180;
+  $('cfg-internet-power-off').value = internet.power_off_seconds ?? 5;
+  $('cfg-internet-post-reboot-holdoff').value = internet.post_reboot_holdoff_seconds ?? 180;
+  $('cfg-internet-max-cycles-incident').value = internet.max_cycles_per_incident ?? 3;
+  $('cfg-internet-max-cycles-hour').value = internet.max_cycles_per_hour ?? 6;
+  $('cfg-internet-cooldown').value = internet.cooldown_seconds ?? 3600;
+  $('cfg-internet-dns-refresh').value = internet.dns_refresh_seconds ?? 300;
+  $('cfg-internet-recovery-stability').value = internet.recovery_stability_seconds ?? 15;
+
+  const device = state.config.device || {};
+  $('cfg-device-target').value = device.target || '';
+  $('cfg-device-failure-threshold').value = device.failure_threshold_seconds ?? 60;
+  $('cfg-device-power-off').value = device.power_off_seconds ?? 5;
+  $('cfg-device-post-reboot-holdoff').value = device.post_reboot_holdoff_seconds ?? 300;
+  $('cfg-device-max-cycles-incident').value = device.max_cycles_per_incident ?? 3;
+  $('cfg-device-max-cycles-hour').value = device.max_cycles_per_hour ?? 6;
+  $('cfg-device-cooldown').value = device.cooldown_seconds ?? 3600;
+  $('cfg-device-recovery-stability').value = device.recovery_stability_seconds ?? 30;
+
+  renderModeSections();
 }
 
-async function fetchJson(path, options) {
-  const response = await fetch(path, options);
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchJson(path, options = {}) {
+  const response = await fetch(path, {
+    cache: 'no-store',
+    ...options,
+  });
   const text = await response.text();
   let json = {};
   if (text) {
@@ -84,10 +133,13 @@ async function refreshEvents() {
 }
 
 async function refreshAll() {
-  try {
-    await Promise.all([refreshStatus(), refreshConfig(), refreshEvents()]);
-  } catch (error) {
-    logMessage(`Refresh failed: ${error.message}`);
+  const results = await Promise.allSettled([refreshStatus(), refreshConfig(), refreshEvents()]);
+  const failures = results
+    .filter((result) => result.status === 'rejected')
+    .map((result) => result.reason?.message || 'Unknown error');
+
+  if (failures.length) {
+    logMessage(`Refresh partially failed: ${failures.join('; ')}`);
   }
 }
 
@@ -100,12 +152,20 @@ async function postJson(path, payload) {
 }
 
 async function handleRelay(path, label) {
+  const buttons = ['relay-on', 'relay-off', 'relay-toggle'].map($);
   try {
+    buttons.forEach((button) => { button.disabled = true; });
     await fetchJson(path, { method: 'POST' });
     logMessage(`${label} command sent.`);
+    await delay(250);
     await refreshStatus();
+    setTimeout(() => {
+      refreshStatus().catch((error) => logMessage(`Relay status follow-up failed: ${error.message}`));
+    }, 1200);
   } catch (error) {
     logMessage(`${label} failed: ${error.message}`);
+  } finally {
+    buttons.forEach((button) => { button.disabled = false; });
   }
 }
 
@@ -119,14 +179,34 @@ async function handleConfigSave(event) {
     boot_warmup_seconds: Number($('cfg-boot-warmup').value || 30),
     manual_button_enabled: $('cfg-manual-button').checked,
     admin_username: $('cfg-admin-username').value.trim(),
+    internet: {
+      targets: splitTargets($('cfg-internet-targets').value),
+      failure_threshold_seconds: Number($('cfg-internet-failure-threshold').value || 180),
+      power_off_seconds: Number($('cfg-internet-power-off').value || 5),
+      post_reboot_holdoff_seconds: Number($('cfg-internet-post-reboot-holdoff').value || 180),
+      max_cycles_per_incident: Number($('cfg-internet-max-cycles-incident').value || 3),
+      max_cycles_per_hour: Number($('cfg-internet-max-cycles-hour').value || 6),
+      cooldown_seconds: Number($('cfg-internet-cooldown').value || 3600),
+      dns_refresh_seconds: Number($('cfg-internet-dns-refresh').value || 300),
+      recovery_stability_seconds: Number($('cfg-internet-recovery-stability').value || 15),
+    },
+    device: {
+      target: $('cfg-device-target').value.trim(),
+      failure_threshold_seconds: Number($('cfg-device-failure-threshold').value || 60),
+      power_off_seconds: Number($('cfg-device-power-off').value || 5),
+      post_reboot_holdoff_seconds: Number($('cfg-device-post-reboot-holdoff').value || 300),
+      max_cycles_per_incident: Number($('cfg-device-max-cycles-incident').value || 3),
+      max_cycles_per_hour: Number($('cfg-device-max-cycles-hour').value || 6),
+      cooldown_seconds: Number($('cfg-device-cooldown').value || 3600),
+      recovery_stability_seconds: Number($('cfg-device-recovery-stability').value || 30),
+    },
   };
 
   const password = $('cfg-admin-password').value;
   if (password) payload.admin_password = password;
 
-  if (state.config?.internet) payload.internet = state.config.internet;
-  if (state.config?.device) payload.device = state.config.device;
   if (state.config?.notifications) payload.notifications = state.config.notifications;
+  if (state.config?.central) payload.central = state.config.central;
 
   try {
     await postJson('/api/config/save', payload);
@@ -187,10 +267,13 @@ function wireUi() {
   $('relay-off').addEventListener('click', () => handleRelay('/api/relay/off', 'Relay off'));
   $('relay-toggle').addEventListener('click', () => handleRelay('/api/relay/toggle', 'Relay toggle'));
   $('refresh-status').addEventListener('click', refreshAll);
+  $('cfg-mode').addEventListener('change', renderModeSections);
   $('config-form').addEventListener('submit', handleConfigSave);
   $('ota-form').addEventListener('submit', handleOtaSubmit);
 }
 
 wireUi();
 refreshAll();
-setInterval(refreshStatus, 5000);
+setInterval(() => {
+  refreshStatus().catch((error) => logMessage(`Background status refresh failed: ${error.message}`));
+}, 5000);

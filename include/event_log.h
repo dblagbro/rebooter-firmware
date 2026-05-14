@@ -21,5 +21,6 @@ private:
 
   const char* logPath_ = "/events.json";
   uint16_t maxEntries_ = 200;
+  uint32_t suppressDuplicateWindowSeconds_ = 120;
   std::vector<EventEntry> items_;
 };

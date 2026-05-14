@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <vector>
 
-static constexpr uint16_t CONFIG_SCHEMA_VERSION = 2;
+static constexpr uint16_t CONFIG_SCHEMA_VERSION = 3;
 
 enum class DeviceMode : uint8_t {
   SmartPlug = 0,
@@ -76,6 +76,14 @@ struct CentralConfig {
   uint32_t heartbeatIntervalSeconds = 60;
 };
 
+struct PowerAnalyticsConfig {
+  bool enabled = false;
+  uint8_t sampleRateHz = 1;
+  uint16_t batchSeconds = 15;
+  bool includeWifiStats = true;
+  bool includeFrequency = true;
+};
+
 struct AppConfig {
   uint16_t schemaVersion = CONFIG_SCHEMA_VERSION;
   String deviceName = "Rebooter";
@@ -96,4 +104,5 @@ struct AppConfig {
   DeviceWatchdogConfig device;
   NotificationConfig notifications;
   CentralConfig central;
+  PowerAnalyticsConfig power;
 };

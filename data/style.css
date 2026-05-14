@@ -89,7 +89,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -123,14 +124,74 @@ label span {
   color: #42514b;
 }
 
+.label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.field-help {
+  position: relative;
+}
+
+.field-help summary {
+  list-style: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid #8ba39a;
+  background: #f4f8f6;
+  color: #124d39;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+
+.field-help summary::-webkit-details-marker {
+  display: none;
+}
+
+.field-help[open] summary {
+  background: #124d39;
+  color: #ffffff;
+  border-color: #124d39;
+}
+
+.help-card {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(300px, 72vw);
+  padding: 12px;
+  border: 1px solid #cfd8d4;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 30px rgba(23, 33, 29, 0.12);
+  color: #42514b;
+  font-size: 13px;
+  line-height: 1.45;
+  z-index: 20;
+}
+
 input,
-select {
+select,
+textarea {
   width: 100%;
   border: 1px solid #b8c5c0;
   border-radius: 8px;
   padding: 10px 12px;
   background: #ffffff;
   color: #17211d;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 96px;
 }
 
 .checkbox-row {
@@ -141,6 +202,24 @@ select {
 
 .checkbox-row input {
   width: auto;
+}
+
+.mode-section {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #dee7e2;
+  border-radius: 8px;
+  background: #f8fbf9;
+}
+
+.mode-section h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.mode-section.hidden {
+  display: none;
 }
 
 .status-pill {
@@ -208,5 +287,11 @@ pre {
 
   .topbar h1 {
     font-size: 28px;
+  }
+
+  .help-card {
+    left: 0;
+    right: auto;
+    width: min(320px, calc(100vw - 64px));
   }
 }

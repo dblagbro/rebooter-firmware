@@ -21,10 +21,12 @@
         <h2>Device</h2>
         <dl class="kv">
           <div><dt>Name</dt><dd id="device-name">-</dd></div>
+          <div><dt>Firmware</dt><dd id="firmware-version">-</dd></div>
           <div><dt>Mode</dt><dd id="device-mode">-</dd></div>
           <div><dt>Relay</dt><dd id="relay-state">-</dd></div>
           <div><dt>Wi-Fi</dt><dd id="wifi-state">-</dd></div>
           <div><dt>IP</dt><dd id="device-ip">-</dd></div>
+          <div><dt>Setup AP</dt><dd id="setup-ap">-</dd></div>
           <div><dt>Uptime</dt><dd id="uptime">-</dd></div>
         </dl>
       </article>
@@ -44,14 +46,15 @@
     <section class="band grid-two">
       <article class="panel">
         <h2>Provisioning</h2>
+        <p class="hint">This firmware first tries saved Wi-Fi plus the built-in default networks. If none work, the full device falls back to its setup access point so you can join it from a phone or laptop, browse to 192.168.4.1, and enter the real WLAN credentials. The setup network is open by default.</p>
         <form id="config-form" class="stack">
           <label>
-            <span>Device Name</span>
+            <span class="label-row"><span>Device Name</span><details class="field-help"><summary aria-label="Help for Device Name">?</summary><div class="help-card">This is the friendly name shown in the local UI and any central management views. It does not change device behavior, so pick something short and recognizable like "Office Modem" or "Lab Router Rebooter."</div></details></span>
             <input id="cfg-device-name" name="device_name" maxlength="32">
           </label>
 
           <label>
-            <span>Mode</span>
+            <span class="label-row"><span>Mode</span><details class="field-help"><summary aria-label="Help for Mode">?</summary><div class="help-card">This chooses how the plug behaves. Smart Plug is manual control, Internet Watchdog checks outside connectivity, and Device Watchdog watches one specific host or IP for failure.</div></details></span>
             <select id="cfg-mode" name="current_mode">
               <option value="smart_plug">Smart Plug</option>
               <option value="internet_watchdog">Internet Watchdog</option>
@@ -60,7 +63,7 @@
           </label>
 
           <label>
-            <span>Relay Restore</span>
+            <span class="label-row"><span>Relay Restore</span><details class="field-help"><summary aria-label="Help for Relay Restore">?</summary><div class="help-card">This decides what the relay does after a reboot or power interruption. "Restore Previous" is usually the safest choice for inline equipment because it tries to return to the last known state.</div></details></span>
             <select id="cfg-restore" name="relay_restore_behavior">
               <option value="restore_previous">Restore Previous</option>
               <option value="always_on">Always On</option>
@@ -69,27 +72,55 @@
           </label>
 
           <label>
-            <span>Monitor Interval (sec)</span>
+            <span class="label-row"><span>Monitor Interval (sec)</span><details class="field-help"><summary aria-label="Help for Monitor Interval">?</summary><div class="help-card">This is how often the watchdog logic wakes up to evaluate the current mode. Lower values react faster, but they also create more network traffic and more frequent checks.</div></details></span>
             <input id="cfg-monitor-interval" name="monitor_interval_seconds" type="number" min="2" max="3600">
           </label>
 
           <label>
-            <span>Boot Warm-up (sec)</span>
+            <span class="label-row"><span>Boot Warm-up (sec)</span><details class="field-help"><summary aria-label="Help for Boot Warm-up">?</summary><div class="help-card">This is the grace period after boot before watchdog actions are allowed to trigger. Use it to give routers, modems, or attached devices enough time to come up cleanly before the plug judges them unhealthy.</div></details></span>
             <input id="cfg-boot-warmup" name="boot_warmup_seconds" type="number" min="0" max="600">
           </label>
 
           <label class="checkbox-row">
             <input id="cfg-manual-button" name="manual_button_enabled" type="checkbox">
-            <span>Enable short button press for relay in Smart Plug mode</span>
+            <span class="label-row"><span>Enable short button press for relay in Smart Plug mode</span><details class="field-help"><summary aria-label="Help for Manual Button">?</summary><div class="help-card">When this is enabled, a short press on the physical button toggles the relay while in Smart Plug mode. Turn it off if you want to prevent accidental manual power changes on important equipment.</div></details></span>
           </label>
 
+          <section id="cfg-internet-section" class="mode-section">
+            <h3>Internet Watchdog</h3>
+            <label>
+              <span class="label-row"><span>Targets (one host or IP per line)</span><details class="field-help"><summary aria-label="Help for Internet Targets">?</summary><div class="help-card">These are the external hosts or IPs the plug will check to decide whether internet access is healthy. Use a few reliable targets so one flaky service does not trigger an unnecessary power cycle.</div></details></span>
+              <textarea id="cfg-internet-targets" rows="4" placeholder="1.1.1.1&#10;8.8.8.8&#10;time.nist.gov"></textarea>
+            </label>
+            <label><span class="label-row"><span>Failure Threshold (sec)</span><details class="field-help"><summary aria-label="Help for Internet Failure Threshold">?</summary><div class="help-card">This is how long the internet checks must fail before the plug treats the outage as real. Longer thresholds avoid reacting to brief hiccups, while shorter thresholds respond faster to true outages.</div></details></span><input id="cfg-internet-failure-threshold" type="number" min="10" max="86400"></label>
+            <label><span class="label-row"><span>Power Off Duration (sec)</span><details class="field-help"><summary aria-label="Help for Internet Power Off Duration">?</summary><div class="help-card">This controls how long the relay stays off during a recovery cycle. It should be long enough for the attached modem or router to truly lose power and restart cleanly.</div></details></span><input id="cfg-internet-power-off" type="number" min="1" max="300"></label>
+            <label><span class="label-row"><span>Post-Reboot Holdoff (sec)</span><details class="field-help"><summary aria-label="Help for Internet Post-Reboot Holdoff">?</summary><div class="help-card">This is the quiet period after power is restored before new failures count again. It prevents the device from immediately cycling again while the attached equipment is still booting.</div></details></span><input id="cfg-internet-post-reboot-holdoff" type="number" min="10" max="86400"></label>
+            <label><span class="label-row"><span>Max Cycles Per Incident</span><details class="field-help"><summary aria-label="Help for Max Cycles Per Incident">?</summary><div class="help-card">This caps how many recovery attempts are allowed for one continuous outage event. It stops a single bad incident from causing endless power flapping.</div></details></span><input id="cfg-internet-max-cycles-incident" type="number" min="1" max="20"></label>
+            <label><span class="label-row"><span>Max Cycles Per Hour</span><details class="field-help"><summary aria-label="Help for Max Cycles Per Hour">?</summary><div class="help-card">This is the broader rate limit across all incidents in a rolling hour. It protects equipment and power stability if something upstream is behaving badly.</div></details></span><input id="cfg-internet-max-cycles-hour" type="number" min="1" max="60"></label>
+            <label><span class="label-row"><span>Cooldown (sec)</span><details class="field-help"><summary aria-label="Help for Cooldown">?</summary><div class="help-card">After the device hits its retry limits, this cooldown pauses further automatic action for a while. It gives the network time to settle and keeps the plug from thrashing.</div></details></span><input id="cfg-internet-cooldown" type="number" min="60" max="86400"></label>
+            <label><span class="label-row"><span>DNS Refresh (sec)</span><details class="field-help"><summary aria-label="Help for DNS Refresh">?</summary><div class="help-card">This controls how often the device refreshes DNS-backed targets instead of reusing old lookups forever. It matters most when you watch hostnames instead of fixed IP addresses.</div></details></span><input id="cfg-internet-dns-refresh" type="number" min="60" max="86400"></label>
+            <label><span class="label-row"><span>Recovery Stability (sec)</span><details class="field-help"><summary aria-label="Help for Recovery Stability">?</summary><div class="help-card">This requires the checks to stay healthy for a minimum time before the incident is considered fully recovered. It helps avoid bouncing between failed and recovered states during marginal connectivity.</div></details></span><input id="cfg-internet-recovery-stability" type="number" min="0" max="3600"></label>
+          </section>
+
+          <section id="cfg-device-section" class="mode-section">
+            <h3>Device Watchdog</h3>
+            <label><span class="label-row"><span>Target Host or IP</span><details class="field-help"><summary aria-label="Help for Device Target">?</summary><div class="help-card">This is the specific device or service the plug should watch, usually by IP or stable hostname. Pick the thing whose failure should justify power-cycling the outlet.</div></details></span><input id="cfg-device-target" maxlength="128" placeholder="192.168.1.1"></label>
+            <label><span class="label-row"><span>Failure Threshold (sec)</span><details class="field-help"><summary aria-label="Help for Device Failure Threshold">?</summary><div class="help-card">This is how long the watched device must appear down before the plug reacts. It filters out short blips so the outlet only acts on sustained problems.</div></details></span><input id="cfg-device-failure-threshold" type="number" min="10" max="86400"></label>
+            <label><span class="label-row"><span>Power Off Duration (sec)</span><details class="field-help"><summary aria-label="Help for Device Power Off Duration">?</summary><div class="help-card">This is how long the outlet cuts power during a recovery attempt. Set it long enough that the attached hardware truly shuts down before power comes back.</div></details></span><input id="cfg-device-power-off" type="number" min="1" max="300"></label>
+            <label><span class="label-row"><span>Post-Reboot Holdoff (sec)</span><details class="field-help"><summary aria-label="Help for Device Post-Reboot Holdoff">?</summary><div class="help-card">This quiet period starts after power is restored and blocks immediate retriggering. It gives the attached device time to boot and rejoin the network normally.</div></details></span><input id="cfg-device-post-reboot-holdoff" type="number" min="10" max="86400"></label>
+            <label><span class="label-row"><span>Max Cycles Per Incident</span><details class="field-help"><summary aria-label="Help for Device Max Cycles Per Incident">?</summary><div class="help-card">This limits how many times one failure episode can trigger a reboot attempt. It prevents endless cycling when the watched device has a deeper problem.</div></details></span><input id="cfg-device-max-cycles-incident" type="number" min="1" max="20"></label>
+            <label><span class="label-row"><span>Max Cycles Per Hour</span><details class="field-help"><summary aria-label="Help for Device Max Cycles Per Hour">?</summary><div class="help-card">This rate limit applies across repeated incidents in an hour. It is a safety cap to avoid hammering the outlet or the attached hardware.</div></details></span><input id="cfg-device-max-cycles-hour" type="number" min="1" max="60"></label>
+            <label><span class="label-row"><span>Cooldown (sec)</span><details class="field-help"><summary aria-label="Help for Device Cooldown">?</summary><div class="help-card">Once retry limits are reached, cooldown pauses further automatic action for this many seconds. That pause gives you breathing room to inspect the device instead of letting it loop forever.</div></details></span><input id="cfg-device-cooldown" type="number" min="60" max="86400"></label>
+            <label><span class="label-row"><span>Recovery Stability (sec)</span><details class="field-help"><summary aria-label="Help for Device Recovery Stability">?</summary><div class="help-card">This requires the watched device to stay healthy for a minimum time before the incident is considered resolved. It helps avoid false recovery when a device flaps briefly back online.</div></details></span><input id="cfg-device-recovery-stability" type="number" min="0" max="3600"></label>
+          </section>
+
           <label>
-            <span>Admin Username</span>
+            <span class="label-row"><span>Admin Username</span><details class="field-help"><summary aria-label="Help for Admin Username">?</summary><div class="help-card">This is the local username used to protect the device web UI and API after you set credentials. Keep it memorable, because this login is separate from any future central account.</div></details></span>
             <input id="cfg-admin-username" name="admin_username" maxlength="32" placeholder="admin">
           </label>
 
           <label>
-            <span>Admin Password</span>
+            <span class="label-row"><span>Admin Password</span><details class="field-help"><summary aria-label="Help for Admin Password">?</summary><div class="help-card">This password protects the local device interface and OTA endpoint. Leave it blank when saving if you want to keep the current password unchanged.</div></details></span>
             <input id="cfg-admin-password" name="admin_password" type="password" minlength="8" maxlength="64" placeholder="Leave blank to keep current">
           </label>
 
@@ -103,7 +134,7 @@
         <h2>Firmware Update</h2>
         <form id="ota-form" class="stack">
           <label>
-            <span>Firmware Bin</span>
+            <span class="label-row"><span>Firmware Bin</span><details class="field-help"><summary aria-label="Help for Firmware Bin">?</summary><div class="help-card">Choose a compiled `.bin` firmware file to update this device over the network. The upload only affects this one unit, and the device will reboot automatically after the OTA completes.</div></details></span>
             <input id="ota-file" type="file" accept=".bin,application/octet-stream">
           </label>
           <div class="actions">

@@ -1,16 +1,19 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266httpUpdate.h>
+#include <WiFiManager.h>
 #include <WiFiClientSecureBearSSL.h>
 
 #include "pins.h"
 #include "bootstrap_config.h"
+#include "provisioning_config.h"
 
 namespace {
 enum class BootstrapState : uint8_t {
   Booting,
   ConnectingWifi,
   WifiConnected,
+  CaptivePortal,
   Downloading,
   UpdateFailed,
   Idle
@@ -22,6 +25,14 @@ bool g_ledOn = false;
 uint8_t g_updateAttempts = 0;
 uint32_t g_nextWifiAttemptAt = 0;
 uint32_t g_nextUpdateAttemptAt = 0;
+String g_setupApName;
+WiFiManager g_wm;
+
+const char* setupApPasswordOrNull() {
+  return ProvisioningConfig::SETUP_AP_PASSWORD[0] == '\0'
+      ? nullptr
+      : ProvisioningConfig::SETUP_AP_PASSWORD;
+}
 
 void setLed(bool on) {
   g_ledOn = on;
@@ -41,6 +52,13 @@ void printBanner() {
   Serial.println("Rebooter bootstrap OTA loader");
   Serial.print("Version: ");
   Serial.println(BootstrapConfig::CURRENT_VERSION);
+  Serial.println("Wi-Fi candidates:");
+  for (size_t i = 0; i < BootstrapConfig::WIFI_NETWORK_COUNT; ++i) {
+    Serial.print("  ");
+    Serial.print(i + 1);
+    Serial.print(". ");
+    Serial.println(BootstrapConfig::WIFI_NETWORKS[i].ssid);
+  }
   Serial.println("Target URLs:");
   for (size_t i = 0; i < BootstrapConfig::FIRMWARE_URL_COUNT; ++i) {
     Serial.print("  ");
@@ -51,39 +69,79 @@ void printBanner() {
 }
 
 void beginWifiConnection() {
-  Serial.print("Connecting to SSID: ");
-  Serial.println(BootstrapConfig::WIFI_SSID);
-
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.hostname("rebooter-bootstrap");
-  WiFi.begin(BootstrapConfig::WIFI_SSID, BootstrapConfig::WIFI_PASSWORD);
-
   g_state = BootstrapState::ConnectingWifi;
 }
 
-bool waitForWifi() {
-  const uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < BootstrapConfig::WIFI_CONNECT_TIMEOUT_MS) {
-    blinkLed(250);
-    delay(25);
-    yield();
+bool startCaptivePortalProvisioning() {
+  g_setupApName = ProvisioningConfig::setupApName(ESP.getChipId());
+  Serial.println("Starting bootstrap setup access point for Wi-Fi provisioning.");
+  Serial.print("Setup SSID: ");
+  Serial.println(g_setupApName);
+  if (ProvisioningConfig::SETUP_AP_PASSWORD[0] == '\0') {
+    Serial.println("Setup network is open (no password).");
+  } else {
+    Serial.print("Setup password: ");
+    Serial.println(ProvisioningConfig::SETUP_AP_PASSWORD);
   }
+  Serial.println("Join the setup network and browse to 192.168.4.1 to configure Wi-Fi.");
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("Wi-Fi connected. IP: ");
+  g_state = BootstrapState::CaptivePortal;
+  g_wm.setTitle("Rebooter Bootstrap Setup");
+  g_wm.setConfigPortalTimeout(ProvisioningConfig::CONFIG_PORTAL_TIMEOUT_SECONDS);
+  g_wm.setDebugOutput(false);
+  g_wm.setHostname("rebooter-bootstrap");
+
+  const bool connected = g_wm.autoConnect(g_setupApName.c_str(), setupApPasswordOrNull());
+  if (connected) {
+    Serial.print("Provisioned Wi-Fi connected. IP: ");
     Serial.println(WiFi.localIP());
     g_state = BootstrapState::WifiConnected;
     setLed(true);
     return true;
   }
 
-  Serial.println("Wi-Fi connection timed out.");
-  WiFi.disconnect();
-  g_nextWifiAttemptAt = millis() + BootstrapConfig::WIFI_RETRY_DELAY_MS;
+  Serial.println("Provisioning portal exited without Wi-Fi credentials.");
   g_state = BootstrapState::UpdateFailed;
   return false;
+}
+
+bool waitForWifi() {
+  for (size_t i = 0; i < BootstrapConfig::WIFI_NETWORK_COUNT; ++i) {
+    const auto& network = BootstrapConfig::WIFI_NETWORKS[i];
+
+    Serial.print("Connecting to SSID: ");
+    Serial.println(network.ssid);
+    WiFi.begin(network.ssid, network.password);
+
+    const uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED &&
+           millis() - start < BootstrapConfig::WIFI_CONNECT_TIMEOUT_MS) {
+      blinkLed(250);
+      delay(25);
+      yield();
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.print("Wi-Fi connected. IP: ");
+      Serial.println(WiFi.localIP());
+      g_state = BootstrapState::WifiConnected;
+      setLed(true);
+      return true;
+    }
+
+    Serial.print("Wi-Fi connection timed out for SSID: ");
+    Serial.println(network.ssid);
+    WiFi.disconnect();
+    delay(250);
+  }
+
+  Serial.println("All Wi-Fi connection attempts timed out. Falling back to setup access point.");
+  WiFi.disconnect();
+  return startCaptivePortalProvisioning();
 }
 
 void configureUpdateCallbacks() {
@@ -195,6 +253,9 @@ void loop() {
       break;
     case BootstrapState::WifiConnected:
       setLed(true);
+      break;
+    case BootstrapState::CaptivePortal:
+      blinkLed(400);
       break;
     case BootstrapState::Downloading:
       blinkLed(100);

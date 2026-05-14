@@ -1,3 +1,7 @@
 #pragma once
 
-static constexpr char FIRMWARE_VERSION[] = "0.1.1-dev-central";
+#ifdef SAFE_FALLBACK_TEST_BAD_BOOT
+static constexpr char FIRMWARE_VERSION[] = "0.1.19-dev-central-safe-badboot";
+#else
+static constexpr char FIRMWARE_VERSION[] = "0.1.19-dev-central-safe";
+#endif

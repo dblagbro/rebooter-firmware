@@ -25,6 +25,18 @@ void MonitorEngine::begin(AppConfig* config, RuntimeStatus* status,
 void MonitorEngine::loop() {
   if (!config_ || !status_ || !relay_) return;
 
+  if (status_->recoveryMode) {
+    failureStartMs_ = 0;
+    powerCycleActive_ = false;
+    relayPowerOffIssued_ = false;
+    status_->inHoldoff = false;
+    status_->holdoffRemainingSeconds = 0;
+    status_->inCooldown = false;
+    status_->cooldownRemainingSeconds = 0;
+    status_->healthState = HealthState::Unknown;
+    return;
+  }
+
   const uint32_t now = millis();
 
   if (now - hourWindowStartMs_ >= 3600UL * 1000UL) {
