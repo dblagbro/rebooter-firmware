@@ -40,5 +40,29 @@ includes:
 - central heartbeat expansion with `reported_config`
 - power telemetry configuration surfaces
 
+## Current validated checkpoint
+
+Current release-quality checkpoint:
+
+- firmware: `0.1.21-dev-central-safe`
+- SHA256:
+  - `59D06F4F4279CC41ADA3A866B23E9CA4F64152D6399C08F109780FB91DE739F9`
+- validated on live bench device `.48`
+
+What was deeply retested on this line:
+
+- public-vs-protected config behavior
+- local UI auth/session flow
+- protected relay and config-save actions from the actual device-served UI
+- heartbeat preview and central diagnostics
+- event-log sequencing metadata
+- 3-cycle OTA stress pass without recovery-mode relapse
+
+What is still intentionally not claimed as fully closed:
+
+- physical button timing/behavior still needs bench-hands verification
+- destructive recovery/factory-reset retest still needs an operator window
+- power-sample upload still needs a live receiving-hub validation pass
+
 The full product target is still broader than the current implementation, but
 the repo is now an active working firmware codebase rather than only a starter.
