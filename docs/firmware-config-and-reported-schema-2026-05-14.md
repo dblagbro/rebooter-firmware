@@ -9,7 +9,7 @@ Purpose:
 - replace guesswork with a source-backed schema note
 
 Firmware baseline:
-- `0.1.18-dev-central-safe`
+- `0.1.21-dev-central-safe`
 
 Primary sources:
 - `C:\dev\rebooter-firmware\src\web_server_manager.cpp`
@@ -187,16 +187,29 @@ This means:
 Endpoint:
 - `GET /api/config`
 
-This returns the persisted config shape, including:
+This returns a safe public config shape intended for local UI hydration,
+including:
 - top-level watchdog settings
 - `internet`
 - `device`
-- `central`
+- redacted `central`
 - `power`
+- local admin username
 
 Sensitive behavior:
-- `GET /api/config` does **not** include `central.device_token`
-- `GET /api/system/config-backup` **does** include `central.device_token`
+- `GET /api/config` does **not** include:
+  - `central.enrollment_token`
+  - `central.site_id`
+  - `central.device_id`
+  - `central.device_token`
+- `GET /api/config` does include safe central summary fields such as:
+  - `enabled`
+  - `base_urls`
+  - `device_alias`
+  - `registered`
+  - `has_enrollment_token`
+  - polling/heartbeat intervals
+- `GET /api/system/config-backup` **does** include full central identity fields
   after auth, for protected backup/restore
 
 ---
@@ -206,13 +219,13 @@ Sensitive behavior:
 Important current reality:
 
 - the hub has desired-config drift machinery
-- the firmware does **not** currently include `reported_config` in heartbeat
-- therefore hub-side `last_reported_config` truth is not naturally kept current
-  by the present firmware line
+- the firmware now includes `reported_config` in heartbeat
+- therefore hub-side `last_reported_config` truth can be kept current by the
+  present firmware line if the hub consumes that field
 
 That means:
-- hub-side drift support is ahead of firmware-side reporting today
-- the recommended next firmware step is to add `reported_config` to heartbeat
+- firmware-side reporting is no longer the blocker for desired-config drift truth
+- remaining drift gaps are now mostly hub-consumption and UX work
 
 ### Recommended `reported_config` shape
 
@@ -293,7 +306,7 @@ For hub-side desired-config and drift work:
 
 ## 8. Immediate next firmware tasks after this reconciliation
 
-1. add `reported_config` to heartbeat
-2. keep the reported shape aligned to the safe non-secret subset
-3. update the stale hub-side schema doc to match the real firmware contract
-4. after that, hub-side drift UI can be trusted much more confidently
+1. keep the `reported_config` shape aligned to the safe non-secret subset
+2. update the stale hub-side schema doc to match the real firmware contract
+3. verify hub-side drift rendering against the emitted heartbeat payload
+4. continue reducing asymmetry between local config save and central `apply_config`

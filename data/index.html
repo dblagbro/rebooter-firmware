@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Rebooter</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -15,6 +16,28 @@
       </div>
       <div class="status-pill" id="health-pill">Unknown</div>
     </header>
+
+    <section class="band">
+      <article class="panel auth-panel">
+        <div class="auth-header">
+          <div>
+            <h2>Local Access</h2>
+            <p class="hint" id="auth-note">Checking whether local auth is required...</p>
+          </div>
+          <div class="auth-state" id="auth-state">Checking</div>
+        </div>
+        <form id="auth-form" class="auth-form">
+          <label>
+            <span>Password</span>
+            <input id="auth-password" type="password" maxlength="64" autocomplete="current-password" placeholder="Enter local admin password">
+          </label>
+          <div class="actions">
+            <button id="auth-submit" type="submit">Unlock Protected Actions</button>
+            <button id="auth-clear" type="button" class="secondary">Clear</button>
+          </div>
+        </form>
+      </article>
+    </section>
 
     <section class="band grid-two">
       <article class="panel">
@@ -34,12 +57,12 @@
       <article class="panel">
         <h2>Relay</h2>
         <div class="actions">
-          <button id="relay-on">Turn On</button>
-          <button id="relay-off">Turn Off</button>
-          <button id="relay-toggle">Toggle</button>
+          <button id="relay-on" data-protected="true">Turn On</button>
+          <button id="relay-off" data-protected="true">Turn Off</button>
+          <button id="relay-toggle" data-protected="true">Toggle</button>
           <button id="refresh-status" class="secondary">Refresh</button>
         </div>
-        <p class="hint">Relay commands require auth only after you set an admin password.</p>
+        <p class="hint" id="relay-hint">Relay commands require auth only after you set an admin password.</p>
       </article>
     </section>
 
@@ -125,7 +148,7 @@
           </label>
 
           <div class="actions">
-            <button type="submit">Save Settings</button>
+            <button id="config-save" type="submit" data-protected="true">Save Settings</button>
           </div>
         </form>
       </article>
@@ -138,7 +161,7 @@
             <input id="ota-file" type="file" accept=".bin,application/octet-stream">
           </label>
           <div class="actions">
-            <button type="submit">Upload Firmware</button>
+            <button id="ota-submit" type="submit" data-protected="true">Upload Firmware</button>
           </div>
         </form>
         <div class="progress-wrap">

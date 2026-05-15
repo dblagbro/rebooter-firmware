@@ -56,6 +56,10 @@ static void setDefaultTargets(AppConfig& config) {
   config.internet.targets.push_back("time.nist.gov");
 }
 
+static bool isLegacySecondaryCentralUrl(const String& url) {
+  return url == "https://www2.voipguru.org/rebooter";
+}
+
 static void validateConfig(AppConfig& config) {
   config.schemaVersion = CONFIG_SCHEMA_VERSION;
   config.deviceName.trim();
@@ -120,12 +124,12 @@ static void validateConfig(AppConfig& config) {
     if (url.isEmpty() || url.length() > 192) continue;
     if (url.endsWith("/")) url.remove(url.length() - 1);
     if (url.endsWith("/api/v1")) url.remove(url.length() - 7);
+    if (isLegacySecondaryCentralUrl(url)) continue;
     cleanedBaseUrls.push_back(url);
     if (cleanedBaseUrls.size() >= 4) break;
   }
   if (cleanedBaseUrls.empty()) {
     cleanedBaseUrls.push_back("https://www.voipguru.org/rebooter");
-    cleanedBaseUrls.push_back("https://www2.voipguru.org/rebooter");
   }
   config.central.baseUrls = cleanedBaseUrls;
   config.central.enrollmentToken.trim();

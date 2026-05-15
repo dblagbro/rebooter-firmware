@@ -5,7 +5,7 @@ Purpose:
 - give the hub team one clear contract to implement against
 - separate **current emitted fields** from **recommended next fields**
 
-This note reflects the current `0.1.18-dev-central-safe` line.
+This note reflects the current `0.1.21-dev-central-safe` line.
 
 ## Scope
 
@@ -53,7 +53,8 @@ Current emitted fields:
 | `central_enabled` | bool | Local device config says central is enabled |
 | `central_registered` | bool | Device currently has non-empty central device id + token |
 | `central_state` | string | Current central client state machine string |
-| `central_device_id` | string | Current registered central device id, if any |
+| `auth_required` | bool | Whether local protected actions require `X-Rebooter-Auth` |
+| `central_identity_present` | bool | Whether the device currently has a central identity bound locally |
 | `central_last_heartbeat_seconds` | int | Device uptime-second stamp of last successful central heartbeat |
 | `central_last_heartbeat_uptime_seconds` | int | Same value as above today; duplicate naming for readability |
 | `central_heartbeat_age_seconds` | int | `uptime_seconds - central_last_heartbeat_seconds` |
@@ -122,30 +123,19 @@ Current emitted fields:
 | `last_event_type` | string | Last event label |
 | `last_event_at` | string | Currently blank in practice |
 
-### Important gap
+### Current state
 
-The heartbeat **does not currently carry**:
-- `central_enabled`
-- `central_registered`
-- `central_state`
-- `recovery_mode`
-- `auto_recovery_triggered`
-- `last_known_good_restored`
-- `consecutive_unhealthy_boots`
-- `holdoff_remaining_seconds`
-- `cooldown_remaining_seconds`
-- `power_analytics_enabled`
-- `power_sample_rate_hz`
-- `power_batch_seconds`
-- `reported_config`
-
-That is why the hub can currently know less than the local device page knows.
+The heartbeat now carries the richer recovery/status truth that was missing
+earlier in the day, including `reported_config`. The hub can still lag if it
+does not consume those newer fields yet, but the firmware payload is no longer
+the limiting factor for those items.
 
 ---
 
-## 3. Recommended next additive heartbeat fields
+## 3. Current additive heartbeat fields
 
-These fields should be added to heartbeat next, without breaking existing hub behavior.
+These fields are now emitted by the current firmware line and should be treated
+as stable hub-consumption candidates.
 
 ### 3.1 Strongly recommended fields
 
@@ -257,10 +247,10 @@ Short recommendation:
 
 ## 6. Immediate next firmware tasks after this contract
 
-1. add the strongly recommended fields to heartbeat payload
-2. add `reported_config` to heartbeat so desired-config drift is kept current centrally
-3. keep local `/api/status` unchanged as the debug superset
-4. re-test with `.48` and one ordinary fleet device after the heartbeat expansion
+1. keep local `/api/status` and heartbeat field names stable
+2. keep public vs protected local surfaces aligned with the documented contract
+3. re-test hub consumption of the newer heartbeat fields
+4. continue normalizing operator-facing mappings for `central_state`
 
 ---
 
