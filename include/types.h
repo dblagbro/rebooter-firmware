@@ -64,8 +64,7 @@ struct NotificationConfig {
 struct CentralConfig {
   bool enabled = false;
   std::vector<String> baseUrls = {
-    "https://www.voipguru.org/rebooter",
-    "https://www2.voipguru.org/rebooter"
+    "https://www.voipguru.org/rebooter"
   };
   String enrollmentToken = "";
   String deviceAlias = "";

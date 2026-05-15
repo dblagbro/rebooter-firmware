@@ -55,6 +55,50 @@ body {
   font-size: 20px;
 }
 
+.auth-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.auth-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.auth-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.auth-state {
+  min-width: 124px;
+  text-align: center;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-weight: 700;
+  background: #d8e0dc;
+  color: #21312b;
+}
+
+.auth-state.unlocked {
+  background: #d8f0da;
+  color: #1e5c27;
+}
+
+.auth-state.locked {
+  background: #f3e4b9;
+  color: #6d5614;
+}
+
+.auth-state.unneeded {
+  background: #dbe8f8;
+  color: #21446b;
+}
+
 .kv {
   margin: 0;
 }
@@ -107,6 +151,11 @@ button {
 button.secondary {
   background: #ffffff;
   color: #124d39;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .stack {
@@ -287,6 +336,10 @@ pre {
 
   .topbar h1 {
     font-size: 28px;
+  }
+
+  .auth-form {
+    grid-template-columns: 1fr;
   }
 
   .help-card {

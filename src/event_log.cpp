@@ -7,6 +7,11 @@ void EventLog::begin(uint16_t maxEntries) {
   maxEntries_ = max<uint16_t>(25, min<uint16_t>(maxEntries, 100));
   load();
   trimToLimit();
+  if (!items_.empty()) {
+    const EventEntry& last = items_.back();
+    nextSeq_ = max<uint32_t>(last.seq + 1, static_cast<uint32_t>(items_.size() + 1));
+    bootId_ = max<uint32_t>(last.bootId + 1, 1);
+  }
 }
 
 void EventLog::add(const String& type, const String& message) {
@@ -26,13 +31,14 @@ void EventLog::add(const String& type, const String& message) {
     const EventEntry& last = items_.back();
     if (last.type == cleanType &&
         last.message == cleanMessage &&
+        last.bootId == bootId_ &&
         nowSeconds >= last.ts &&
         (nowSeconds - last.ts) < suppressDuplicateWindowSeconds_) {
       return;
     }
   }
 
-  items_.push_back({nowSeconds, cleanType, cleanMessage});
+  items_.push_back({nextSeq_++, bootId_, nowSeconds, cleanType, cleanMessage});
   trimToLimit();
   persist();
 }
@@ -42,7 +48,10 @@ String EventLog::asJson() const {
   JsonArray arr = doc.to<JsonArray>();
   for (const auto& item : items_) {
     JsonObject o = arr.add<JsonObject>();
+    o["seq"] = item.seq;
+    o["boot_id"] = item.bootId;
     o["ts"] = item.ts;
+    o["ts_basis"] = "uptime_seconds";
     o["type"] = item.type;
     o["message"] = item.message;
   }
@@ -80,14 +89,28 @@ void EventLog::load() {
   if (err != DeserializationError::Ok || !doc.is<JsonArray>()) return;
 
   items_.reserve(maxEntries_);
+  bool migratedLegacyEntries = false;
   for (JsonObject item : doc.as<JsonArray>()) {
     EventEntry entry;
+    entry.seq = item["seq"] | 0;
+    entry.bootId = item["boot_id"] | 0;
     entry.ts = item["ts"] | 0;
     entry.type = String((const char*)(item["type"] | "event"));
     entry.message = String((const char*)(item["message"] | ""));
     if (entry.message.isEmpty()) continue;
+    if (entry.seq == 0) {
+      entry.seq = items_.empty() ? 1 : (items_.back().seq + 1);
+      migratedLegacyEntries = true;
+    }
+    if (entry.bootId == 0) {
+      entry.bootId = 1;
+      migratedLegacyEntries = true;
+    }
     if (items_.size() >= maxEntries_) break;
     items_.push_back(entry);
+  }
+  if (migratedLegacyEntries) {
+    persist();
   }
 }
 
@@ -96,7 +119,10 @@ void EventLog::persist() const {
   JsonArray arr = doc.to<JsonArray>();
   for (const auto& item : items_) {
     JsonObject o = arr.add<JsonObject>();
+    o["seq"] = item.seq;
+    o["boot_id"] = item.bootId;
     o["ts"] = item.ts;
+    o["ts_basis"] = "uptime_seconds";
     o["type"] = item.type;
     o["message"] = item.message;
   }

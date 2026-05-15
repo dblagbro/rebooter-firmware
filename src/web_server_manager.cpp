@@ -23,6 +23,7 @@ static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Rebooter</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -34,6 +35,28 @@ static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
       </div>
       <div class="status-pill" id="health-pill">Unknown</div>
     </header>
+
+    <section class="band">
+      <article class="panel auth-panel">
+        <div class="auth-header">
+          <div>
+            <h2>Local Access</h2>
+            <p class="hint" id="auth-note">Checking whether local auth is required...</p>
+          </div>
+          <div class="auth-state" id="auth-state">Checking</div>
+        </div>
+        <form id="auth-form" class="auth-form">
+          <label>
+            <span>Password</span>
+            <input id="auth-password" type="password" maxlength="64" autocomplete="current-password" placeholder="Enter local admin password">
+          </label>
+          <div class="actions">
+            <button id="auth-submit" type="submit">Unlock Protected Actions</button>
+            <button id="auth-clear" type="button" class="secondary">Clear</button>
+          </div>
+        </form>
+      </article>
+    </section>
 
     <section class="band grid-two">
       <article class="panel">
@@ -53,12 +76,12 @@ static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
       <article class="panel">
         <h2>Relay</h2>
         <div class="actions">
-          <button id="relay-on">Turn On</button>
-          <button id="relay-off">Turn Off</button>
-          <button id="relay-toggle">Toggle</button>
+          <button id="relay-on" data-protected="true">Turn On</button>
+          <button id="relay-off" data-protected="true">Turn Off</button>
+          <button id="relay-toggle" data-protected="true">Toggle</button>
           <button id="refresh-status" class="secondary">Refresh</button>
         </div>
-        <p class="hint">Relay commands require auth only after you set an admin password.</p>
+        <p class="hint" id="relay-hint">Relay commands require auth only after you set an admin password.</p>
       </article>
     </section>
 
@@ -69,34 +92,39 @@ static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
         <form id="config-form" class="stack">
           <label>
             <span class="label-row"><span>Device Name</span><details class="field-help"><summary aria-label="Help for Device Name">?</summary><div class="help-card">This is the friendly name shown in the local UI and any central management views. It does not change device behavior, so pick something short and recognizable like "Office Modem" or "Lab Router Rebooter."</div></details></span>
-            <input id="cfg-device-name" maxlength="32">
+            <input id="cfg-device-name" name="device_name" maxlength="32">
           </label>
+
           <label>
             <span class="label-row"><span>Mode</span><details class="field-help"><summary aria-label="Help for Mode">?</summary><div class="help-card">This chooses how the plug behaves. Smart Plug is manual control, Internet Watchdog checks outside connectivity, and Device Watchdog watches one specific host or IP for failure.</div></details></span>
-            <select id="cfg-mode">
+            <select id="cfg-mode" name="current_mode">
               <option value="smart_plug">Smart Plug</option>
               <option value="internet_watchdog">Internet Watchdog</option>
               <option value="device_watchdog">Device Watchdog</option>
             </select>
           </label>
+
           <label>
             <span class="label-row"><span>Relay Restore</span><details class="field-help"><summary aria-label="Help for Relay Restore">?</summary><div class="help-card">This decides what the relay does after a reboot or power interruption. "Restore Previous" is usually the safest choice for inline equipment because it tries to return to the last known state.</div></details></span>
-            <select id="cfg-restore">
+            <select id="cfg-restore" name="relay_restore_behavior">
               <option value="restore_previous">Restore Previous</option>
               <option value="always_on">Always On</option>
               <option value="always_off">Always Off</option>
             </select>
           </label>
+
           <label>
             <span class="label-row"><span>Monitor Interval (sec)</span><details class="field-help"><summary aria-label="Help for Monitor Interval">?</summary><div class="help-card">This is how often the watchdog logic wakes up to evaluate the current mode. Lower values react faster, but they also create more network traffic and more frequent checks.</div></details></span>
-            <input id="cfg-monitor-interval" type="number" min="2" max="3600">
+            <input id="cfg-monitor-interval" name="monitor_interval_seconds" type="number" min="2" max="3600">
           </label>
+
           <label>
             <span class="label-row"><span>Boot Warm-up (sec)</span><details class="field-help"><summary aria-label="Help for Boot Warm-up">?</summary><div class="help-card">This is the grace period after boot before watchdog actions are allowed to trigger. Use it to give routers, modems, or attached devices enough time to come up cleanly before the plug judges them unhealthy.</div></details></span>
-            <input id="cfg-boot-warmup" type="number" min="0" max="600">
+            <input id="cfg-boot-warmup" name="boot_warmup_seconds" type="number" min="0" max="600">
           </label>
+
           <label class="checkbox-row">
-            <input id="cfg-manual-button" type="checkbox">
+            <input id="cfg-manual-button" name="manual_button_enabled" type="checkbox">
             <span class="label-row"><span>Enable short button press for relay in Smart Plug mode</span><details class="field-help"><summary aria-label="Help for Manual Button">?</summary><div class="help-card">When this is enabled, a short press on the physical button toggles the relay while in Smart Plug mode. Turn it off if you want to prevent accidental manual power changes on important equipment.</div></details></span>
           </label>
 
@@ -130,13 +158,17 @@ static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
 
           <label>
             <span class="label-row"><span>Admin Username</span><details class="field-help"><summary aria-label="Help for Admin Username">?</summary><div class="help-card">This is the local username used to protect the device web UI and API after you set credentials. Keep it memorable, because this login is separate from any future central account.</div></details></span>
-            <input id="cfg-admin-username" maxlength="32" placeholder="admin">
+            <input id="cfg-admin-username" name="admin_username" maxlength="32" placeholder="admin">
           </label>
+
           <label>
             <span class="label-row"><span>Admin Password</span><details class="field-help"><summary aria-label="Help for Admin Password">?</summary><div class="help-card">This password protects the local device interface and OTA endpoint. Leave it blank when saving if you want to keep the current password unchanged.</div></details></span>
-            <input id="cfg-admin-password" type="password" minlength="8" maxlength="64" placeholder="Leave blank to keep current">
+            <input id="cfg-admin-password" name="admin_password" type="password" minlength="8" maxlength="64" placeholder="Leave blank to keep current">
           </label>
-          <div class="actions"><button type="submit">Save Settings</button></div>
+
+          <div class="actions">
+            <button id="config-save" type="submit" data-protected="true">Save Settings</button>
+          </div>
         </form>
       </article>
 
@@ -147,7 +179,9 @@ static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
             <span class="label-row"><span>Firmware Bin</span><details class="field-help"><summary aria-label="Help for Firmware Bin">?</summary><div class="help-card">Choose a compiled `.bin` firmware file to update this device over the network. The upload only affects this one unit, and the device will reboot automatically after the OTA completes.</div></details></span>
             <input id="ota-file" type="file" accept=".bin,application/octet-stream">
           </label>
-          <div class="actions"><button type="submit">Upload Firmware</button></div>
+          <div class="actions">
+            <button id="ota-submit" type="submit" data-protected="true">Upload Firmware</button>
+          </div>
         </form>
         <div class="progress-wrap">
           <progress id="ota-progress" max="100" value="0"></progress>
@@ -157,8 +191,19 @@ static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
       </article>
     </section>
 
-    <section class="band"><article class="panel"><h2>Events</h2><pre id="events-view">Loading events...</pre></article></section>
-    <section class="band"><article class="panel"><h2>Message Log</h2><pre id="message-log">Ready.</pre></article></section>
+    <section class="band">
+      <article class="panel">
+        <h2>Events</h2>
+        <pre id="events-view">Loading events...</pre>
+      </article>
+    </section>
+
+    <section class="band">
+      <article class="panel">
+        <h2>Message Log</h2>
+        <pre id="message-log">Ready.</pre>
+      </article>
+    </section>
   </main>
   <script src="/app.js"></script>
 </body>
@@ -166,56 +211,363 @@ static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
 )HTML";
 
 static const char FALLBACK_STYLE_CSS[] PROGMEM = R"CSS(
-* { box-sizing: border-box; }
-body { margin: 0; font-family: Arial, sans-serif; background: #eef2f0; color: #17211d; }
-.shell { max-width: 1080px; margin: 0 auto; padding: 20px; }
-.topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 20px 0 8px; }
-.topbar h1 { margin: 0 0 8px; font-size: 34px; }
-.topbar p { margin: 0; color: #54625c; }
-.band { margin-top: 18px; }
-.grid-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
-.panel { background: #ffffff; border: 1px solid #cfd8d4; border-radius: 8px; padding: 18px; }
-.panel h2 { margin: 0 0 14px; font-size: 20px; }
-.kv { margin: 0; }
-.kv div { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid #edf2ef; }
-.kv div:last-child { border-bottom: 0; }
-.kv dt { font-weight: 700; }
-.kv dd { margin: 0; text-align: right; color: #42514b; }
-.actions { display: flex; flex-wrap: wrap; gap: 10px; }
-button, input, select { font: inherit; }
-button { appearance: none; border: 1px solid #124d39; background: #124d39; color: #ffffff; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
-button.secondary { background: #ffffff; color: #124d39; }
-.stack { display: grid; gap: 12px; }
-label { display: grid; gap: 6px; }
-label span { font-size: 14px; color: #42514b; }
-.label-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.field-help { position: relative; }
-.field-help summary { list-style: none; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid #8ba39a; background: #f4f8f6; color: #124d39; font-size: 12px; font-weight: 700; cursor: pointer; user-select: none; }
-.field-help summary::-webkit-details-marker { display: none; }
-.field-help[open] summary { background: #124d39; color: #ffffff; border-color: #124d39; }
-.help-card { position: absolute; right: 0; top: calc(100% + 8px); width: min(300px, 72vw); padding: 12px; border: 1px solid #cfd8d4; border-radius: 8px; background: #ffffff; box-shadow: 0 10px 30px rgba(23, 33, 29, 0.12); color: #42514b; font-size: 13px; line-height: 1.45; z-index: 20; }
-input, select, textarea { width: 100%; border: 1px solid #b8c5c0; border-radius: 8px; padding: 10px 12px; background: #ffffff; color: #17211d; }
-textarea { resize: vertical; min-height: 96px; }
-.checkbox-row { grid-template-columns: auto 1fr; align-items: center; column-gap: 10px; }
-.checkbox-row input { width: auto; }
-.mode-section { display: grid; gap: 12px; padding: 14px; border: 1px solid #dee7e2; border-radius: 8px; background: #f8fbf9; }
-.mode-section h3 { margin: 0; font-size: 16px; }
-.mode-section.hidden { display: none; }
-.status-pill { min-width: 116px; text-align: center; padding: 10px 12px; border-radius: 8px; font-weight: 700; background: #d8e0dc; color: #21312b; }
-.status-pill.healthy { background: #d8f0da; color: #1e5c27; }
-.status-pill.partial-failure, .status-pill.holdoff { background: #f3e4b9; color: #6d5614; }
-.status-pill.failed, .status-pill.cooldown { background: #f3c7bf; color: #7b2319; }
-.progress-wrap { display: grid; gap: 8px; margin-top: 14px; }
-progress { width: 100%; height: 16px; }
-.hint { margin: 10px 0 0; color: #5d6c66; font-size: 14px; }
-pre { margin: 0; padding: 14px; background: #f6f9f7; border: 1px solid #dee7e2; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
-@media (max-width: 800px) { .grid-two { grid-template-columns: 1fr; } .topbar { flex-direction: column; } .topbar h1 { font-size: 28px; } .help-card { left: 0; right: auto; width: min(320px, calc(100vw - 64px)); } }
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #eef2f0;
+  color: #17211d;
+}
+
+.shell {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px 0 8px;
+}
+
+.topbar h1 {
+  margin: 0 0 8px;
+  font-size: 34px;
+}
+
+.topbar p {
+  margin: 0;
+  color: #54625c;
+}
+
+.band {
+  margin-top: 18px;
+}
+
+.grid-two {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #cfd8d4;
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.panel h2 {
+  margin: 0 0 14px;
+  font-size: 20px;
+}
+
+.auth-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.auth-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.auth-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.auth-state {
+  min-width: 124px;
+  text-align: center;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-weight: 700;
+  background: #d8e0dc;
+  color: #21312b;
+}
+
+.auth-state.unlocked {
+  background: #d8f0da;
+  color: #1e5c27;
+}
+
+.auth-state.locked {
+  background: #f3e4b9;
+  color: #6d5614;
+}
+
+.auth-state.unneeded {
+  background: #dbe8f8;
+  color: #21446b;
+}
+
+.kv {
+  margin: 0;
+}
+
+.kv div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid #edf2ef;
+}
+
+.kv div:last-child {
+  border-bottom: 0;
+}
+
+.kv dt {
+  font-weight: 700;
+}
+
+.kv dd {
+  margin: 0;
+  text-align: right;
+  color: #42514b;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  appearance: none;
+  border: 1px solid #124d39;
+  background: #124d39;
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: #ffffff;
+  color: #124d39;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.stack {
+  display: grid;
+  gap: 12px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+}
+
+label span {
+  font-size: 14px;
+  color: #42514b;
+}
+
+.label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.field-help {
+  position: relative;
+}
+
+.field-help summary {
+  list-style: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid #8ba39a;
+  background: #f4f8f6;
+  color: #124d39;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+
+.field-help summary::-webkit-details-marker {
+  display: none;
+}
+
+.field-help[open] summary {
+  background: #124d39;
+  color: #ffffff;
+  border-color: #124d39;
+}
+
+.help-card {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(300px, 72vw);
+  padding: 12px;
+  border: 1px solid #cfd8d4;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 30px rgba(23, 33, 29, 0.12);
+  color: #42514b;
+  font-size: 13px;
+  line-height: 1.45;
+  z-index: 20;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  border: 1px solid #b8c5c0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #ffffff;
+  color: #17211d;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 96px;
+}
+
+.checkbox-row {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 10px;
+}
+
+.checkbox-row input {
+  width: auto;
+}
+
+.mode-section {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #dee7e2;
+  border-radius: 8px;
+  background: #f8fbf9;
+}
+
+.mode-section h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.mode-section.hidden {
+  display: none;
+}
+
+.status-pill {
+  min-width: 116px;
+  text-align: center;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-weight: 700;
+  background: #d8e0dc;
+  color: #21312b;
+}
+
+.status-pill.healthy {
+  background: #d8f0da;
+  color: #1e5c27;
+}
+
+.status-pill.partial-failure,
+.status-pill.holdoff {
+  background: #f3e4b9;
+  color: #6d5614;
+}
+
+.status-pill.failed,
+.status-pill.cooldown {
+  background: #f3c7bf;
+  color: #7b2319;
+}
+
+.progress-wrap {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+progress {
+  width: 100%;
+  height: 16px;
+}
+
+.hint {
+  margin: 10px 0 0;
+  color: #5d6c66;
+  font-size: 14px;
+}
+
+pre {
+  margin: 0;
+  padding: 14px;
+  background: #f6f9f7;
+  border: 1px solid #dee7e2;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 800px) {
+  .grid-two {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    flex-direction: column;
+  }
+
+  .topbar h1 {
+    font-size: 28px;
+  }
+
+  .auth-form {
+    grid-template-columns: 1fr;
+  }
+
+  .help-card {
+    left: 0;
+    right: auto;
+    width: min(320px, calc(100vw - 64px));
+  }
+}
 )CSS";
 
 static const char FALLBACK_APP_JS[] PROGMEM = R"JS(
 const state = {
   status: null,
   config: null,
+  authToken: sessionStorage.getItem('rebooterAuth') || '',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -239,6 +591,55 @@ function setHealthPill(health) {
   const pill = $('health-pill');
   pill.textContent = health || 'unknown';
   pill.className = `status-pill ${String(health || 'unknown').replace(/_/g, '-')}`;
+}
+
+function authRequired() {
+  return !!state.status?.auth_required;
+}
+
+function hasAuthToken() {
+  return !!state.authToken;
+}
+
+function protectedActionsUnlocked() {
+  return !authRequired() || hasAuthToken();
+}
+
+function updateProtectedControls() {
+  document.querySelectorAll('[data-protected="true"]').forEach((element) => {
+    element.disabled = !protectedActionsUnlocked();
+  });
+}
+
+function renderAuth() {
+  const note = $('auth-note');
+  const stateBadge = $('auth-state');
+  const password = $('auth-password');
+
+  if (!state.status) {
+    note.textContent = 'Checking whether local auth is required...';
+    stateBadge.textContent = 'Checking';
+    stateBadge.className = 'auth-state';
+    updateProtectedControls();
+    return;
+  }
+
+  if (!authRequired()) {
+    note.textContent = 'This device currently allows local protected actions without an admin password.';
+    stateBadge.textContent = 'Open';
+    stateBadge.className = 'auth-state unneeded';
+    password.value = '';
+  } else if (hasAuthToken()) {
+    note.textContent = 'Protected actions are unlocked for this browser tab. Clear the session when you are done.';
+    stateBadge.textContent = 'Unlocked';
+    stateBadge.className = 'auth-state unlocked';
+  } else {
+    note.textContent = 'This device requires the local admin password before relay, save, OTA, and system actions are allowed.';
+    stateBadge.textContent = 'Locked';
+    stateBadge.className = 'auth-state locked';
+  }
+
+  updateProtectedControls();
 }
 
 function splitTargets(value) {
@@ -272,6 +673,10 @@ function renderStatus() {
       : 'Device is up but Wi-Fi is not currently connected.';
   }
   setHealthPill(state.status.health_state);
+  $('relay-hint').textContent = authRequired()
+    ? 'Relay commands are locked until you unlock this browser tab with the local admin password.'
+    : 'Relay commands are currently available without local auth.';
+  renderAuth();
 }
 
 function renderConfig() {
@@ -313,9 +718,15 @@ function delay(ms) {
 }
 
 async function fetchJson(path, options = {}) {
+  const { headers: optionHeaders, ...rest } = options;
+  const headers = new Headers(optionHeaders || {});
+  if (state.authToken) {
+    headers.set('X-Rebooter-Auth', state.authToken);
+  }
   const response = await fetch(path, {
     cache: 'no-store',
-    ...options,
+    ...rest,
+    headers,
   });
   const text = await response.text();
   let json = {};
@@ -327,6 +738,9 @@ async function fetchJson(path, options = {}) {
     }
   }
   if (!response.ok) {
+    if (response.status === 401 && state.authToken) {
+      setAuthToken('');
+    }
     throw new Error(json.error || `${response.status} ${response.statusText}`);
   }
   return json;
@@ -366,7 +780,52 @@ async function postJson(path, payload) {
   });
 }
 
+function setAuthToken(token) {
+  state.authToken = token || '';
+  if (state.authToken) {
+    sessionStorage.setItem('rebooterAuth', state.authToken);
+  } else {
+    sessionStorage.removeItem('rebooterAuth');
+  }
+  renderAuth();
+}
+
+async function handleAuthSubmit(event) {
+  event.preventDefault();
+  if (!authRequired()) {
+    logMessage('Local auth is not required on this device right now.');
+    return;
+  }
+
+  const password = $('auth-password').value.trim();
+  if (!password) {
+    logMessage('Enter the local admin password first.');
+    return;
+  }
+
+  try {
+    setAuthToken(password);
+    await fetchJson('/api/system/heartbeat-preview');
+    $('auth-password').value = '';
+    logMessage('Protected actions unlocked for this browser tab.');
+    await refreshAll();
+  } catch (error) {
+    setAuthToken('');
+    logMessage(`Unlock failed: ${error.message}`);
+  }
+}
+
+function handleAuthClear() {
+  setAuthToken('');
+  $('auth-password').value = '';
+  logMessage('Cleared the local auth token for this browser tab.');
+}
+
 async function handleRelay(path, label) {
+  if (!protectedActionsUnlocked()) {
+    logMessage(`${label} blocked: unlock protected actions first.`);
+    return;
+  }
   const buttons = ['relay-on', 'relay-off', 'relay-toggle'].map($);
   try {
     buttons.forEach((button) => { button.disabled = true; });
@@ -386,6 +845,10 @@ async function handleRelay(path, label) {
 
 async function handleConfigSave(event) {
   event.preventDefault();
+  if (!protectedActionsUnlocked()) {
+    logMessage('Save blocked: unlock protected actions first.');
+    return;
+  }
   const payload = {
     device_name: $('cfg-device-name').value.trim(),
     current_mode: $('cfg-mode').value,
@@ -419,11 +882,15 @@ async function handleConfigSave(event) {
 
   const password = $('cfg-admin-password').value;
   if (password) payload.admin_password = password;
+
   if (state.config?.notifications) payload.notifications = state.config.notifications;
   if (state.config?.central) payload.central = state.config.central;
 
   try {
     await postJson('/api/config/save', payload);
+    if (password) {
+      setAuthToken(password);
+    }
     $('cfg-admin-password').value = '';
     logMessage('Settings saved.');
     await refreshAll();
@@ -434,6 +901,10 @@ async function handleConfigSave(event) {
 
 async function handleOtaSubmit(event) {
   event.preventDefault();
+  if (!protectedActionsUnlocked()) {
+    logMessage('OTA blocked: unlock protected actions first.');
+    return;
+  }
   const input = $('ota-file');
   const file = input.files && input.files[0];
   if (!file) {
@@ -446,6 +917,9 @@ async function handleOtaSubmit(event) {
 
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/system/ota', true);
+  if (state.authToken) {
+    xhr.setRequestHeader('X-Rebooter-Auth', state.authToken);
+  }
 
   xhr.upload.onprogress = (evt) => {
     if (!evt.lengthComputable) return;
@@ -477,6 +951,8 @@ async function handleOtaSubmit(event) {
 }
 
 function wireUi() {
+  $('auth-form').addEventListener('submit', handleAuthSubmit);
+  $('auth-clear').addEventListener('click', handleAuthClear);
   $('relay-on').addEventListener('click', () => handleRelay('/api/relay/on', 'Relay on'));
   $('relay-off').addEventListener('click', () => handleRelay('/api/relay/off', 'Relay off'));
   $('relay-toggle').addEventListener('click', () => handleRelay('/api/relay/toggle', 'Relay toggle'));
@@ -487,6 +963,7 @@ function wireUi() {
 }
 
 wireUi();
+renderAuth();
 refreshAll();
 setInterval(() => {
   refreshStatus().catch((error) => logMessage(`Background status refresh failed: ${error.message}`));
@@ -638,7 +1115,16 @@ static bool requireAuth() {
   return sAuth && sAuth->requireAuth(server);
 }
 
-static void sendConfigJson(bool includeSecrets = false) {
+static bool authRequiredForUi() {
+  return sAuth && sAuth->isProvisioned();
+}
+
+static void sendMethodNotAllowed(const char* allowed) {
+  server.sendHeader("Allow", allowed);
+  server.send(405, "application/json", "{\"error\":\"method not allowed\"}");
+}
+
+static void sendConfigJson(bool includeProtectedFields = false) {
   JsonDocument doc;
   doc["schema_version"] = sConfig->schemaVersion;
   doc["device_name"] = sConfig->deviceName;
@@ -673,11 +1159,14 @@ static void sendConfigJson(bool includeSecrets = false) {
   doc["central"]["enabled"] = sConfig->central.enabled;
   JsonArray centralBaseUrls = doc["central"]["base_urls"].to<JsonArray>();
   for (const auto& url : sConfig->central.baseUrls) centralBaseUrls.add(url);
-  doc["central"]["enrollment_token"] = sConfig->central.enrollmentToken;
   doc["central"]["device_alias"] = sConfig->central.deviceAlias;
-  doc["central"]["site_id"] = sConfig->central.siteId;
-  doc["central"]["device_id"] = sConfig->central.deviceId;
-  if (includeSecrets) {
+  doc["central"]["registered"] =
+      !sConfig->central.deviceId.isEmpty() && !sConfig->central.deviceToken.isEmpty();
+  doc["central"]["has_enrollment_token"] = !sConfig->central.enrollmentToken.isEmpty();
+  if (includeProtectedFields) {
+    doc["central"]["enrollment_token"] = sConfig->central.enrollmentToken;
+    doc["central"]["site_id"] = sConfig->central.siteId;
+    doc["central"]["device_id"] = sConfig->central.deviceId;
     doc["central"]["device_token"] = sConfig->central.deviceToken;
   }
   doc["central"]["poll_interval_seconds"] = sConfig->central.pollIntervalSeconds;
@@ -736,10 +1225,11 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
       doc["hour_cycles"] = sStatus->currentHourCycles;
       doc["holdoff_remaining_seconds"] = sStatus->holdoffRemainingSeconds;
       doc["cooldown_remaining_seconds"] = sStatus->cooldownRemainingSeconds;
+      doc["auth_required"] = authRequiredForUi();
       doc["central_enabled"] = sStatus->centralEnabled;
       doc["central_registered"] = sStatus->centralRegistered;
       doc["central_state"] = sStatus->centralState;
-      doc["central_device_id"] = sStatus->centralDeviceId;
+      doc["central_identity_present"] = !sStatus->centralDeviceId.isEmpty();
       doc["central_last_heartbeat_seconds"] = lastHeartbeatStamp;
       doc["central_last_heartbeat_uptime_seconds"] = lastHeartbeatStamp;
       doc["central_heartbeat_age_seconds"] = heartbeatAgeSeconds;
@@ -958,6 +1448,19 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     if (sAuth && !sAuth->isAuthorized(server)) return;
     HTTPUpload& upload = server.upload();
     sOta->handleUpload(upload);
+  });
+
+  server.on("/api/relay/on", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
+  server.on("/api/relay/off", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
+  server.on("/api/relay/toggle", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
+  server.on("/api/config/save", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
+  server.on("/api/system/reboot", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
+  server.on("/api/system/recovery-boot", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
+  server.on("/api/system/factory-reset", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
+  server.on("/api/system/ota", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
+
+  server.on("/favicon.ico", HTTP_GET, []() {
+    server.send(204, "text/plain", "");
   });
 
   server.on("/style.css", HTTP_GET, []() {

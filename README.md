@@ -31,4 +31,14 @@ This project controls mains-powered hardware. Treat the Sonoff S31 as hazardous 
 
 ## Current Status
 
-This repo contains the first PlatformIO scaffold extracted from the proof-of-concept starter file. The full firmware specification is captured in `SPECS.md`; implementation still needs to be brought up to that spec.
+This repo is beyond the original scaffold stage. The current firmware line
+includes:
+
+- local auth-protected control paths
+- safe fallback and recovery work
+- protected config backup/restore
+- central heartbeat expansion with `reported_config`
+- power telemetry configuration surfaces
+
+The full product target is still broader than the current implementation, but
+the repo is now an active working firmware codebase rather than only a starter.

@@ -1,6 +1,7 @@
 const state = {
   status: null,
   config: null,
+  authToken: sessionStorage.getItem('rebooterAuth') || '',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -24,6 +25,55 @@ function setHealthPill(health) {
   const pill = $('health-pill');
   pill.textContent = health || 'unknown';
   pill.className = `status-pill ${String(health || 'unknown').replace(/_/g, '-')}`;
+}
+
+function authRequired() {
+  return !!state.status?.auth_required;
+}
+
+function hasAuthToken() {
+  return !!state.authToken;
+}
+
+function protectedActionsUnlocked() {
+  return !authRequired() || hasAuthToken();
+}
+
+function updateProtectedControls() {
+  document.querySelectorAll('[data-protected="true"]').forEach((element) => {
+    element.disabled = !protectedActionsUnlocked();
+  });
+}
+
+function renderAuth() {
+  const note = $('auth-note');
+  const stateBadge = $('auth-state');
+  const password = $('auth-password');
+
+  if (!state.status) {
+    note.textContent = 'Checking whether local auth is required...';
+    stateBadge.textContent = 'Checking';
+    stateBadge.className = 'auth-state';
+    updateProtectedControls();
+    return;
+  }
+
+  if (!authRequired()) {
+    note.textContent = 'This device currently allows local protected actions without an admin password.';
+    stateBadge.textContent = 'Open';
+    stateBadge.className = 'auth-state unneeded';
+    password.value = '';
+  } else if (hasAuthToken()) {
+    note.textContent = 'Protected actions are unlocked for this browser tab. Clear the session when you are done.';
+    stateBadge.textContent = 'Unlocked';
+    stateBadge.className = 'auth-state unlocked';
+  } else {
+    note.textContent = 'This device requires the local admin password before relay, save, OTA, and system actions are allowed.';
+    stateBadge.textContent = 'Locked';
+    stateBadge.className = 'auth-state locked';
+  }
+
+  updateProtectedControls();
 }
 
 function splitTargets(value) {
@@ -57,6 +107,10 @@ function renderStatus() {
       : 'Device is up but Wi-Fi is not currently connected.';
   }
   setHealthPill(state.status.health_state);
+  $('relay-hint').textContent = authRequired()
+    ? 'Relay commands are locked until you unlock this browser tab with the local admin password.'
+    : 'Relay commands are currently available without local auth.';
+  renderAuth();
 }
 
 function renderConfig() {
@@ -98,9 +152,15 @@ function delay(ms) {
 }
 
 async function fetchJson(path, options = {}) {
+  const { headers: optionHeaders, ...rest } = options;
+  const headers = new Headers(optionHeaders || {});
+  if (state.authToken) {
+    headers.set('X-Rebooter-Auth', state.authToken);
+  }
   const response = await fetch(path, {
     cache: 'no-store',
-    ...options,
+    ...rest,
+    headers,
   });
   const text = await response.text();
   let json = {};
@@ -112,6 +172,9 @@ async function fetchJson(path, options = {}) {
     }
   }
   if (!response.ok) {
+    if (response.status === 401 && state.authToken) {
+      setAuthToken('');
+    }
     throw new Error(json.error || `${response.status} ${response.statusText}`);
   }
   return json;
@@ -151,7 +214,52 @@ async function postJson(path, payload) {
   });
 }
 
+function setAuthToken(token) {
+  state.authToken = token || '';
+  if (state.authToken) {
+    sessionStorage.setItem('rebooterAuth', state.authToken);
+  } else {
+    sessionStorage.removeItem('rebooterAuth');
+  }
+  renderAuth();
+}
+
+async function handleAuthSubmit(event) {
+  event.preventDefault();
+  if (!authRequired()) {
+    logMessage('Local auth is not required on this device right now.');
+    return;
+  }
+
+  const password = $('auth-password').value.trim();
+  if (!password) {
+    logMessage('Enter the local admin password first.');
+    return;
+  }
+
+  try {
+    setAuthToken(password);
+    await fetchJson('/api/system/heartbeat-preview');
+    $('auth-password').value = '';
+    logMessage('Protected actions unlocked for this browser tab.');
+    await refreshAll();
+  } catch (error) {
+    setAuthToken('');
+    logMessage(`Unlock failed: ${error.message}`);
+  }
+}
+
+function handleAuthClear() {
+  setAuthToken('');
+  $('auth-password').value = '';
+  logMessage('Cleared the local auth token for this browser tab.');
+}
+
 async function handleRelay(path, label) {
+  if (!protectedActionsUnlocked()) {
+    logMessage(`${label} blocked: unlock protected actions first.`);
+    return;
+  }
   const buttons = ['relay-on', 'relay-off', 'relay-toggle'].map($);
   try {
     buttons.forEach((button) => { button.disabled = true; });
@@ -171,6 +279,10 @@ async function handleRelay(path, label) {
 
 async function handleConfigSave(event) {
   event.preventDefault();
+  if (!protectedActionsUnlocked()) {
+    logMessage('Save blocked: unlock protected actions first.');
+    return;
+  }
   const payload = {
     device_name: $('cfg-device-name').value.trim(),
     current_mode: $('cfg-mode').value,
@@ -210,6 +322,9 @@ async function handleConfigSave(event) {
 
   try {
     await postJson('/api/config/save', payload);
+    if (password) {
+      setAuthToken(password);
+    }
     $('cfg-admin-password').value = '';
     logMessage('Settings saved.');
     await refreshAll();
@@ -220,6 +335,10 @@ async function handleConfigSave(event) {
 
 async function handleOtaSubmit(event) {
   event.preventDefault();
+  if (!protectedActionsUnlocked()) {
+    logMessage('OTA blocked: unlock protected actions first.');
+    return;
+  }
   const input = $('ota-file');
   const file = input.files && input.files[0];
   if (!file) {
@@ -232,6 +351,9 @@ async function handleOtaSubmit(event) {
 
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/system/ota', true);
+  if (state.authToken) {
+    xhr.setRequestHeader('X-Rebooter-Auth', state.authToken);
+  }
 
   xhr.upload.onprogress = (evt) => {
     if (!evt.lengthComputable) return;
@@ -263,6 +385,8 @@ async function handleOtaSubmit(event) {
 }
 
 function wireUi() {
+  $('auth-form').addEventListener('submit', handleAuthSubmit);
+  $('auth-clear').addEventListener('click', handleAuthClear);
   $('relay-on').addEventListener('click', () => handleRelay('/api/relay/on', 'Relay on'));
   $('relay-off').addEventListener('click', () => handleRelay('/api/relay/off', 'Relay off'));
   $('relay-toggle').addEventListener('click', () => handleRelay('/api/relay/toggle', 'Relay toggle'));
@@ -273,6 +397,7 @@ function wireUi() {
 }
 
 wireUi();
+renderAuth();
 refreshAll();
 setInterval(() => {
   refreshStatus().catch((error) => logMessage(`Background status refresh failed: ${error.message}`));
