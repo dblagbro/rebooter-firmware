@@ -348,3 +348,19 @@ pre {
     width: min(320px, calc(100vw - 64px));
   }
 }
+
+.repeat-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hub-url-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.hub-url-row .hub-url-input {
+  flex: 1;
+}

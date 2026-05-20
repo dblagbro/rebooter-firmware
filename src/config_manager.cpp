@@ -172,15 +172,20 @@ static void validateConfig(AppConfig& config) {
   }
   std::vector<String> cleanedBaseUrls;
   for (auto url : config.central.baseUrls) {
-    if (url.isEmpty() || url.length() > 192) continue;
+    if (url.isEmpty() || url.length() > HubDefaults::MAX_BASE_URL_LENGTH) continue;
     if (url.endsWith("/")) url.remove(url.length() - 1);
     if (url.endsWith("/api/v1")) url.remove(url.length() - 7);
     if (isLegacySecondaryCentralUrl(url)) continue;
+    bool duplicate = false;
+    for (const auto& existing : cleanedBaseUrls) {
+      if (existing == url) { duplicate = true; break; }
+    }
+    if (duplicate) continue;
     cleanedBaseUrls.push_back(url);
-    if (cleanedBaseUrls.size() >= 4) break;
+    if (cleanedBaseUrls.size() >= HubDefaults::MAX_BASE_URLS) break;
   }
   if (cleanedBaseUrls.empty()) {
-    cleanedBaseUrls.push_back("https://www.voipguru.org/rebooter");
+    cleanedBaseUrls = HubDefaults::defaultBaseUrls();
   }
   config.central.baseUrls = cleanedBaseUrls;
   config.central.enrollmentToken.trim();

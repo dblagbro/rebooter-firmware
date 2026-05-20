@@ -83,6 +83,46 @@ function splitTargets(value) {
     .filter(Boolean);
 }
 
+const MAX_HUB_URLS = 10;
+
+function addHubUrlRow(value) {
+  const container = $('cfg-hub-urls');
+  if (container.querySelectorAll('.hub-url-row').length >= MAX_HUB_URLS) return;
+  const row = document.createElement('div');
+  row.className = 'hub-url-row';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'hub-url-input';
+  input.maxLength = 192;
+  input.placeholder = 'https://hub.example.com/rebooter';
+  input.value = value || '';
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'secondary';
+  remove.textContent = 'Remove';
+  remove.addEventListener('click', () => {
+    row.remove();
+    if (!$('cfg-hub-urls').querySelectorAll('.hub-url-row').length) addHubUrlRow('');
+  });
+  row.appendChild(input);
+  row.appendChild(remove);
+  container.appendChild(row);
+}
+
+function renderHubUrls(urls) {
+  const container = $('cfg-hub-urls');
+  container.innerHTML = '';
+  const list = Array.isArray(urls) && urls.length ? urls : [''];
+  list.slice(0, MAX_HUB_URLS).forEach((url) => addHubUrlRow(url));
+}
+
+function collectHubUrls() {
+  return Array.from(document.querySelectorAll('.hub-url-input'))
+    .map((input) => input.value.trim())
+    .filter(Boolean)
+    .slice(0, MAX_HUB_URLS);
+}
+
 function renderModeSections() {
   const mode = $('cfg-mode').value;
   $('cfg-internet-section').classList.toggle('hidden', mode !== 'internet_watchdog');
@@ -126,6 +166,10 @@ function renderConfig() {
   $('cfg-event-log-max').value = state.config.event_log_max_entries ?? 200;
   $('cfg-notification-cooldown').value = state.config.notification_cooldown_seconds ?? 60;
   $('cfg-admin-username').value = state.config.admin_username || 'admin';
+
+  const central = state.config.central || {};
+  $('cfg-central-enabled').checked = !!central.enabled;
+  renderHubUrls(central.base_urls);
 
   const notifications = state.config.notifications || {};
   $('cfg-notify-enabled').checked = !!notifications.enabled;
@@ -346,7 +390,13 @@ async function handleConfigSave(event) {
   if (notifyToken) notifications.webhook_auth_token = notifyToken;
   payload.notifications = notifications;
 
-  if (state.config?.central) payload.central = state.config.central;
+  // Only enabled + base_urls are user-editable here. Protected identity fields
+  // (enrollment_token, device_id, device_token, site_id) are intentionally
+  // omitted so the device keeps its stored values.
+  payload.central = {
+    enabled: $('cfg-central-enabled').checked,
+    base_urls: collectHubUrls(),
+  };
 
   try {
     await postJson('/api/config/save', payload);
@@ -420,6 +470,7 @@ function wireUi() {
   $('relay-toggle').addEventListener('click', () => handleRelay('/api/relay/toggle', 'Relay toggle'));
   $('refresh-status').addEventListener('click', refreshAll);
   $('cfg-mode').addEventListener('change', renderModeSections);
+  $('cfg-hub-url-add').addEventListener('click', () => addHubUrlRow(''));
   $('config-form').addEventListener('submit', handleConfigSave);
   $('ota-form').addEventListener('submit', handleOtaSubmit);
 }

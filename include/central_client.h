@@ -29,6 +29,10 @@ private:
                        String& responseBody, int& httpCode,
                        String& selectedBaseUrl);
   String buildApiUrl(const String& baseUrl, const String& path) const;
+  // Builds the ordered list of base-URL indices to attempt this cycle:
+  // starts at lastGoodBaseUrlIndex_ and wraps, capped at MAX_ATTEMPTS_PER_CYCLE
+  // so a fully-down 10-entry list never does 10 TLS handshakes back-to-back.
+  std::vector<size_t> buildAttemptOrder() const;
   void scheduleRetry(bool rateLimited);
   void markSuccess();
   bool registerDevice();
@@ -75,6 +79,10 @@ private:
   uint32_t lastQueuedRealSampleMillis_ = 0;
   uint32_t lastReportedConfigSentAtMs_ = 0;
   uint32_t retryBackoffMs_ = 30000;
+  // Index of the hub base URL that last produced a usable response. Failover
+  // iteration starts here so a healthy hub is reached in a single TLS
+  // handshake on the common path instead of always retrying from index 0.
+  size_t lastGoodBaseUrlIndex_ = 0;
   uint32_t lastAnnounceFailureLogAtMs_ = 0;
   uint32_t lastRegisterFailureLogAtMs_ = 0;
   uint32_t lastHeartbeatFailureLogAtMs_ = 0;

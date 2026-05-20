@@ -183,6 +183,21 @@
             <label><span class="label-row"><span>Recovery Stability (sec)</span><details class="field-help"><summary aria-label="Help for Device Recovery Stability">?</summary><div class="help-card">This requires the watched device to stay healthy for a minimum time before the incident is considered resolved. It helps avoid false recovery when a device flaps briefly back online.</div></details></span><input id="cfg-device-recovery-stability" type="number" min="0" max="3600"></label>
           </section>
 
+          <section class="mode-section">
+            <h3>Central Service</h3>
+            <label class="checkbox-row">
+              <input id="cfg-central-enabled" type="checkbox">
+              <span class="label-row"><span>Enable central management</span><details class="field-help"><summary aria-label="Help for Central Enabled">?</summary><div class="help-card">When enabled, the device contacts the configured hub URLs for heartbeats, commands, and firmware assignment.</div></details></span>
+            </label>
+            <label>
+              <span class="label-row"><span>Hub URLs (up to 10)</span><details class="field-help"><summary aria-label="Help for Hub URLs">?</summary><div class="help-card">The hub is a multi-tenant SaaS, but you may self-host. The device tries these URLs in order and remembers the last one that worked. http:// is allowed for self-hosted hubs. Each URL can be up to 192 characters.</div></details></span>
+            </label>
+            <div id="cfg-hub-urls" class="repeat-rows"></div>
+            <div class="actions">
+              <button id="cfg-hub-url-add" type="button" class="secondary">Add another hub URL</button>
+            </div>
+          </section>
+
           <label>
             <span class="label-row"><span>Admin Username</span><details class="field-help"><summary aria-label="Help for Admin Username">?</summary><div class="help-card">This is the local username used to protect the device web UI and API after you set credentials. Keep it memorable, because this login is separate from any future central account.</div></details></span>
             <input id="cfg-admin-username" name="admin_username" maxlength="32" placeholder="admin">

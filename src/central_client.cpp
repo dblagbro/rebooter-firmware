@@ -34,6 +34,12 @@ static constexpr uint32_t REPORTED_CONFIG_INTERVAL_MS = 900000;
 static constexpr uint32_t COMPACT_HEARTBEAT_FREE_HEAP_THRESHOLD = 20000;
 static constexpr uint32_t COMPACT_POWER_UPLOAD_FREE_HEAP_THRESHOLD = 21000;
 static constexpr uint32_t COMPACT_POWER_UPLOAD_MIN_INTERVAL_MS = 60000;
+// Cap on hub base URLs attempted in a single failover cycle. With up to 10
+// configurable URLs, a fully-down list would otherwise do 10 sequential TLS
+// handshakes per cycle, which is the most expensive heap event in the
+// firmware. The rotating start point ensures every URL is still reachable
+// across cycles.
+static constexpr size_t MAX_ATTEMPTS_PER_CYCLE = 3;
 static constexpr uint32_t COMPACT_POWER_UPLOAD_STARTUP_DELAY_MS = 30000;
 
 String summarizeResponse(const String& response, size_t maxLen = 180) {
@@ -377,16 +383,32 @@ void CentralClient::markSuccess() {
   retryBackoffMs_ = INITIAL_RETRY_DELAY_MS;
 }
 
+std::vector<size_t> CentralClient::buildAttemptOrder() const {
+  std::vector<size_t> order;
+  if (!config_) return order;
+  const size_t count = config_->central.baseUrls.size();
+  if (count == 0) return order;
+
+  size_t start = lastGoodBaseUrlIndex_;
+  if (start >= count) start = 0;
+
+  const size_t attempts = count < MAX_ATTEMPTS_PER_CYCLE ? count : MAX_ATTEMPTS_PER_CYCLE;
+  for (size_t step = 0; step < attempts; ++step) {
+    order.push_back((start + step) % count);
+  }
+  return order;
+}
+
 bool CentralClient::postWithFallback(const String& path, const String& authToken,
                                      const String& body, String& responseBody, int& httpCode,
                                      String& selectedBaseUrl) {
   if (!config_) return false;
-  const size_t count = config_->central.baseUrls.size();
-  if (count == 0) return false;
+  const std::vector<size_t> attemptOrder = buildAttemptOrder();
+  if (attemptOrder.empty()) return false;
 
   String failureSummary;
-  for (size_t i = 0; i < count; ++i) {
-    const String baseUrl = config_->central.baseUrls[i];
+  for (size_t idx : attemptOrder) {
+    const String baseUrl = config_->central.baseUrls[idx];
     std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
     client->setInsecure();
     client->setBufferSizes(512, 512);
@@ -408,17 +430,20 @@ bool CentralClient::postWithFallback(const String& path, const String& authToken
 
     if (httpCode >= 200 && httpCode < 300) {
       selectedBaseUrl = baseUrl;
+      lastGoodBaseUrlIndex_ = idx;
       return true;
     }
 
     if (httpCode == 429) {
       selectedBaseUrl = baseUrl;
+      lastGoodBaseUrlIndex_ = idx;
       return true;
     }
 
     if (httpCode >= 400 && httpCode < 500) {
       if (looksLikeJsonEnvelope(responseBody)) {
         selectedBaseUrl = baseUrl;
+        lastGoodBaseUrlIndex_ = idx;
         return true;
       }
       failureSummary = summarizeResponse(responseBody);
@@ -441,12 +466,12 @@ bool CentralClient::postWithoutResponseWithFallback(const String& path, const St
                                                     const String& body, String& responseBody,
                                                     int& httpCode, String& selectedBaseUrl) {
   if (!config_) return false;
-  const size_t count = config_->central.baseUrls.size();
-  if (count == 0) return false;
+  const std::vector<size_t> attemptOrder = buildAttemptOrder();
+  if (attemptOrder.empty()) return false;
 
   String failureSummary;
-  for (size_t i = 0; i < count; ++i) {
-    const String baseUrl = config_->central.baseUrls[i];
+  for (size_t idx : attemptOrder) {
+    const String baseUrl = config_->central.baseUrls[idx];
     std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
     client->setInsecure();
     client->setBufferSizes(512, 512);
@@ -467,6 +492,7 @@ bool CentralClient::postWithoutResponseWithFallback(const String& path, const St
     if (httpCode >= 200 && httpCode < 300) {
       http.end();
       selectedBaseUrl = baseUrl;
+      lastGoodBaseUrlIndex_ = idx;
       responseBody = "";
       return true;
     }
@@ -474,6 +500,7 @@ bool CentralClient::postWithoutResponseWithFallback(const String& path, const St
     if (httpCode == 429) {
       http.end();
       selectedBaseUrl = baseUrl;
+      lastGoodBaseUrlIndex_ = idx;
       responseBody = "";
       return true;
     }
@@ -484,6 +511,7 @@ bool CentralClient::postWithoutResponseWithFallback(const String& path, const St
     if (httpCode >= 400 && httpCode < 500) {
       if (looksLikeJsonEnvelope(responseBody)) {
         selectedBaseUrl = baseUrl;
+        lastGoodBaseUrlIndex_ = idx;
         return true;
       }
       failureSummary = summarizeResponse(responseBody);
@@ -506,12 +534,12 @@ bool CentralClient::getWithFallback(const String& path, const String& authToken,
                                     String& responseBody, int& httpCode,
                                     String& selectedBaseUrl) {
   if (!config_) return false;
-  const size_t count = config_->central.baseUrls.size();
-  if (count == 0) return false;
+  const std::vector<size_t> attemptOrder = buildAttemptOrder();
+  if (attemptOrder.empty()) return false;
 
   String failureSummary;
-  for (size_t i = 0; i < count; ++i) {
-    const String baseUrl = config_->central.baseUrls[i];
+  for (size_t idx : attemptOrder) {
+    const String baseUrl = config_->central.baseUrls[idx];
     std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
     client->setInsecure();
     client->setBufferSizes(512, 512);
@@ -531,17 +559,20 @@ bool CentralClient::getWithFallback(const String& path, const String& authToken,
 
     if (httpCode >= 200 && httpCode < 300) {
       selectedBaseUrl = baseUrl;
+      lastGoodBaseUrlIndex_ = idx;
       return true;
     }
 
     if (httpCode == 429) {
       selectedBaseUrl = baseUrl;
+      lastGoodBaseUrlIndex_ = idx;
       return true;
     }
 
     if (httpCode >= 400 && httpCode < 500) {
       if (looksLikeJsonEnvelope(responseBody)) {
         selectedBaseUrl = baseUrl;
+        lastGoodBaseUrlIndex_ = idx;
         return true;
       }
       failureSummary = summarizeResponse(responseBody);
