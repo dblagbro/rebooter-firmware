@@ -191,6 +191,21 @@ static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
           </section>
 
           <section class="mode-section">
+            <h3>Wi-Fi Networks</h3>
+            <p class="hint">Saved networks are tried in priority order on boot, then built-in defaults, then the setup AP. Passwords are write-only; blank keeps the stored one.</p>
+            <div id="cfg-wifi-networks" class="repeat-rows"></div>
+            <div class="actions">
+              <button id="cfg-wifi-add" type="button" class="secondary">Add network</button>
+              <button id="cfg-wifi-scan" type="button" class="secondary" data-protected="true">Scan</button>
+            </div>
+            <p class="hint" id="cfg-wifi-scan-result"></p>
+            <label>
+              <span>Connect Timeout per network (ms)</span>
+              <input id="cfg-wifi-timeout" name="wifi_connect_timeout_ms" type="number" min="5000" max="60000">
+            </label>
+          </section>
+
+          <section class="mode-section">
             <h3>Central Service</h3>
             <label class="checkbox-row">
               <input id="cfg-central-enabled" type="checkbox">
@@ -624,6 +639,18 @@ pre {
 .hub-url-row .hub-url-input {
   flex: 1;
 }
+
+.wifi-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.wifi-row .wifi-ssid,
+.wifi-row .wifi-pass {
+  flex: 1 1 140px;
+}
 )CSS";
 
 static const char FALLBACK_APP_JS[] PROGMEM = R"JS(
@@ -712,6 +739,107 @@ function splitTargets(value) {
     .filter(Boolean);
 }
 
+const MAX_WIFI_NETWORKS = 5;
+
+function makeWifiRow(network) {
+  const row = document.createElement('div');
+  row.className = 'wifi-row';
+
+  const ssid = document.createElement('input');
+  ssid.type = 'text';
+  ssid.className = 'wifi-ssid';
+  ssid.maxLength = 32;
+  ssid.placeholder = 'SSID';
+  ssid.value = network.ssid || '';
+
+  const pass = document.createElement('input');
+  pass.type = 'password';
+  pass.className = 'wifi-pass';
+  pass.maxLength = 64;
+  pass.placeholder = network.has_password ? 'Saved (blank = keep)' : 'Password (blank = open)';
+  pass.dataset.hasPassword = network.has_password ? '1' : '0';
+
+  const up = document.createElement('button');
+  up.type = 'button';
+  up.className = 'secondary';
+  up.textContent = 'Up';
+  up.addEventListener('click', () => {
+    const prev = row.previousElementSibling;
+    if (prev) row.parentNode.insertBefore(row, prev);
+  });
+
+  const down = document.createElement('button');
+  down.type = 'button';
+  down.className = 'secondary';
+  down.textContent = 'Down';
+  down.addEventListener('click', () => {
+    const next = row.nextElementSibling;
+    if (next) row.parentNode.insertBefore(next, row);
+  });
+
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'secondary';
+  remove.textContent = 'Remove';
+  remove.addEventListener('click', () => row.remove());
+
+  row.appendChild(ssid);
+  row.appendChild(pass);
+  row.appendChild(up);
+  row.appendChild(down);
+  row.appendChild(remove);
+  return row;
+}
+
+function addWifiRow(network) {
+  const container = $('cfg-wifi-networks');
+  if (container.querySelectorAll('.wifi-row').length >= MAX_WIFI_NETWORKS) return;
+  container.appendChild(makeWifiRow(network || {}));
+}
+
+function renderWifiNetworks(networks) {
+  const container = $('cfg-wifi-networks');
+  container.innerHTML = '';
+  (Array.isArray(networks) ? networks : []).slice(0, MAX_WIFI_NETWORKS)
+    .forEach((network) => addWifiRow(network));
+}
+
+function collectWifiNetworks() {
+  return Array.from(document.querySelectorAll('.wifi-row'))
+    .map((row) => {
+      const ssid = row.querySelector('.wifi-ssid').value.trim();
+      const passInput = row.querySelector('.wifi-pass');
+      const entry = { ssid };
+      if (passInput.value) {
+        entry.password = passInput.value;
+      } else if (passInput.dataset.hasPassword !== '1') {
+        entry.password = '';
+      }
+      return entry;
+    })
+    .filter((entry) => entry.ssid)
+    .slice(0, MAX_WIFI_NETWORKS);
+}
+
+async function handleWifiScan() {
+  if (!protectedActionsUnlocked()) {
+    logMessage('Wi-Fi scan blocked: unlock protected actions first.');
+    return;
+  }
+  const result = $('cfg-wifi-scan-result');
+  result.textContent = 'Scanning...';
+  try {
+    const data = await postJson('/api/wifi/scan', {});
+    const networks = Array.isArray(data.networks) ? data.networks : [];
+    networks.sort((a, b) => (b.rssi || -999) - (a.rssi || -999));
+    result.textContent = networks.length
+      ? networks.map((n) => `${n.ssid} (${n.rssi} dBm${n.secure ? '' : ', open'})`).join('  |  ')
+      : 'No networks found.';
+  } catch (error) {
+    result.textContent = `Scan failed: ${error.message}`;
+  }
+}
+
 const MAX_HUB_URLS = 10;
 
 function addHubUrlRow(value) {
@@ -795,6 +923,10 @@ function renderConfig() {
   $('cfg-event-log-max').value = state.config.event_log_max_entries ?? 200;
   $('cfg-notification-cooldown').value = state.config.notification_cooldown_seconds ?? 60;
   $('cfg-admin-username').value = state.config.admin_username || 'admin';
+
+  const wifi = state.config.wifi || {};
+  renderWifiNetworks(wifi.saved_networks);
+  $('cfg-wifi-timeout').value = wifi.connect_timeout_ms ?? 15000;
 
   const central = state.config.central || {};
   $('cfg-central-enabled').checked = !!central.enabled;
@@ -1019,6 +1151,11 @@ async function handleConfigSave(event) {
   if (notifyToken) notifications.webhook_auth_token = notifyToken;
   payload.notifications = notifications;
 
+  payload.wifi = {
+    saved_networks: collectWifiNetworks(),
+    connect_timeout_ms: Number($('cfg-wifi-timeout').value || 15000),
+  };
+
   payload.central = {
     enabled: $('cfg-central-enabled').checked,
     base_urls: collectHubUrls(),
@@ -1097,6 +1234,8 @@ function wireUi() {
   $('refresh-status').addEventListener('click', refreshAll);
   $('cfg-mode').addEventListener('change', renderModeSections);
   $('cfg-hub-url-add').addEventListener('click', () => addHubUrlRow(''));
+  $('cfg-wifi-add').addEventListener('click', () => addWifiRow({}));
+  $('cfg-wifi-scan').addEventListener('click', handleWifiScan);
   $('config-form').addEventListener('submit', handleConfigSave);
   $('ota-form').addEventListener('submit', handleOtaSubmit);
 }
@@ -1279,6 +1418,16 @@ static void sendConfigJson(bool includeProtectedFields = false) {
   doc["status_led_enabled"] = sConfig->statusLedEnabled;
   doc["event_log_max_entries"] = sConfig->eventLogMaxEntries;
   doc["notification_cooldown_seconds"] = sConfig->notificationCooldownSeconds;
+
+  // Wi-Fi saved networks: never echo plaintext passwords on the read surface.
+  JsonArray savedNetworks = doc["wifi"]["saved_networks"].to<JsonArray>();
+  for (const auto& network : sConfig->wifi.savedNetworks) {
+    JsonObject entry = savedNetworks.add<JsonObject>();
+    entry["ssid"] = network.ssid;
+    entry["has_password"] = !network.password.isEmpty();
+  }
+  doc["wifi"]["connect_timeout_ms"] = sConfig->wifi.connectTimeoutMs;
+  doc["wifi"]["prefer_strongest_known"] = sConfig->wifi.preferStrongestKnown;
 
   JsonArray targets = doc["internet"]["targets"].to<JsonArray>();
   for (const auto& target : sConfig->internet.targets) targets.add(target);
@@ -1512,6 +1661,32 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     sConfig->eventLogMaxEntries = doc["event_log_max_entries"] | sConfig->eventLogMaxEntries;
     sConfig->notificationCooldownSeconds = doc["notification_cooldown_seconds"] | sConfig->notificationCooldownSeconds;
 
+    if (doc["wifi"].is<JsonObject>()) {
+      if (doc["wifi"]["saved_networks"].is<JsonArray>()) {
+        // Snapshot existing passwords so an edit-without-retype (password field
+        // absent for a known SSID) keeps the stored password. A present-but-empty
+        // password explicitly sets an open network.
+        std::vector<WifiNetwork> previous = sConfig->wifi.savedNetworks;
+        std::vector<WifiNetwork> updated;
+        for (JsonVariant v : doc["wifi"]["saved_networks"].as<JsonArray>()) {
+          WifiNetwork network;
+          network.ssid = String((const char*)(v["ssid"] | ""));
+          if (v["password"].is<const char*>()) {
+            network.password = String((const char*)v["password"]);
+          } else {
+            network.password = "";
+            for (const auto& old : previous) {
+              if (old.ssid == network.ssid) { network.password = old.password; break; }
+            }
+          }
+          updated.push_back(network);
+        }
+        sConfig->wifi.savedNetworks = updated;
+      }
+      sConfig->wifi.connectTimeoutMs = doc["wifi"]["connect_timeout_ms"] | sConfig->wifi.connectTimeoutMs;
+      sConfig->wifi.preferStrongestKnown = doc["wifi"]["prefer_strongest_known"] | sConfig->wifi.preferStrongestKnown;
+    }
+
     if (doc["internet"]["targets"].is<JsonArray>()) {
       sConfig->internet.targets.clear();
       for (JsonVariant v : doc["internet"]["targets"].as<JsonArray>()) sConfig->internet.targets.push_back(String((const char*)v));
@@ -1576,6 +1751,22 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     server.send(200, "application/json", "{\"ok\":true}");
   });
 
+
+  server.on("/api/wifi/scan", HTTP_POST, []() {
+    if (!requireAuth()) return;
+    if (!sWifi) {
+      server.send(503, "application/json", "{\"error\":\"wifi service unavailable\"}");
+      return;
+    }
+    // Scanning briefly disrupts the link; it is gated behind an explicit
+    // protected action and runs synchronously, freeing the result immediately.
+    String networks = sWifi->scanNetworksJson();
+    String out = "{\"networks\":";
+    out += networks;
+    out += "}";
+    server.send(200, "application/json", out);
+  });
+  server.on("/api/wifi/scan", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
 
   server.on("/api/system/reboot", HTTP_POST, []() {
     if (!requireAuth()) return;

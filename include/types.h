@@ -75,6 +75,18 @@ struct CentralConfig {
   uint32_t heartbeatIntervalSeconds = 60;
 };
 
+struct WifiNetwork {
+  String ssid;          // <= 32 chars
+  String password;      // <= 64 chars ("" = open network)
+  // Priority is implicit: the vector index (0 = highest priority).
+};
+
+struct WifiConfig {
+  std::vector<WifiNetwork> savedNetworks;   // user-managed, max 5
+  uint32_t connectTimeoutMs = 15000;        // per-network attempt budget
+  bool preferStrongestKnown = false;        // optional scan-first ordering
+};
+
 struct PowerAnalyticsConfig {
   bool enabled = false;
   uint8_t sampleRateHz = 1;
@@ -99,6 +111,7 @@ struct AppConfig {
   uint32_t bootWarmupSeconds = 30;
   uint32_t notificationCooldownSeconds = 60;
   bool manualButtonEnabled = true;
+  WifiConfig wifi;
   InternetWatchdogConfig internet;
   DeviceWatchdogConfig device;
   NotificationConfig notifications;

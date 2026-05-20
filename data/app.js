@@ -123,6 +123,109 @@ function collectHubUrls() {
     .slice(0, MAX_HUB_URLS);
 }
 
+const MAX_WIFI_NETWORKS = 5;
+
+function makeWifiRow(network) {
+  const row = document.createElement('div');
+  row.className = 'wifi-row';
+
+  const ssid = document.createElement('input');
+  ssid.type = 'text';
+  ssid.className = 'wifi-ssid';
+  ssid.maxLength = 32;
+  ssid.placeholder = 'SSID';
+  ssid.value = network.ssid || '';
+
+  const pass = document.createElement('input');
+  pass.type = 'password';
+  pass.className = 'wifi-pass';
+  pass.maxLength = 64;
+  pass.placeholder = network.has_password ? 'Saved (blank = keep)' : 'Password (blank = open)';
+  pass.dataset.hasPassword = network.has_password ? '1' : '0';
+
+  const up = document.createElement('button');
+  up.type = 'button';
+  up.className = 'secondary';
+  up.textContent = 'Up';
+  up.addEventListener('click', () => {
+    const prev = row.previousElementSibling;
+    if (prev) row.parentNode.insertBefore(row, prev);
+  });
+
+  const down = document.createElement('button');
+  down.type = 'button';
+  down.className = 'secondary';
+  down.textContent = 'Down';
+  down.addEventListener('click', () => {
+    const next = row.nextElementSibling;
+    if (next) row.parentNode.insertBefore(next, row);
+  });
+
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'secondary';
+  remove.textContent = 'Remove';
+  remove.addEventListener('click', () => row.remove());
+
+  row.appendChild(ssid);
+  row.appendChild(pass);
+  row.appendChild(up);
+  row.appendChild(down);
+  row.appendChild(remove);
+  return row;
+}
+
+function addWifiRow(network) {
+  const container = $('cfg-wifi-networks');
+  if (container.querySelectorAll('.wifi-row').length >= MAX_WIFI_NETWORKS) return;
+  container.appendChild(makeWifiRow(network || {}));
+}
+
+function renderWifiNetworks(networks) {
+  const container = $('cfg-wifi-networks');
+  container.innerHTML = '';
+  (Array.isArray(networks) ? networks : []).slice(0, MAX_WIFI_NETWORKS)
+    .forEach((network) => addWifiRow(network));
+}
+
+function collectWifiNetworks() {
+  return Array.from(document.querySelectorAll('.wifi-row'))
+    .map((row) => {
+      const ssid = row.querySelector('.wifi-ssid').value.trim();
+      const passInput = row.querySelector('.wifi-pass');
+      const entry = { ssid };
+      // Only send a password when the user typed one; omitting it keeps the
+      // stored password for a known SSID (per the config/save contract).
+      if (passInput.value) {
+        entry.password = passInput.value;
+      } else if (passInput.dataset.hasPassword !== '1') {
+        entry.password = '';
+      }
+      return entry;
+    })
+    .filter((entry) => entry.ssid)
+    .slice(0, MAX_WIFI_NETWORKS);
+}
+
+async function handleWifiScan() {
+  if (!protectedActionsUnlocked()) {
+    logMessage('Wi-Fi scan blocked: unlock protected actions first.');
+    return;
+  }
+  const result = $('cfg-wifi-scan-result');
+  result.textContent = 'Scanning...';
+  try {
+    const data = await postJson('/api/wifi/scan', {});
+    const networks = Array.isArray(data.networks) ? data.networks : [];
+    networks.sort((a, b) => (b.rssi || -999) - (a.rssi || -999));
+    result.textContent = networks.length
+      ? networks.map((n) => `${n.ssid} (${n.rssi} dBm${n.secure ? '' : ', open'})`).join('  |  ')
+      : 'No networks found.';
+  } catch (error) {
+    result.textContent = `Scan failed: ${error.message}`;
+  }
+}
+
 function renderModeSections() {
   const mode = $('cfg-mode').value;
   $('cfg-internet-section').classList.toggle('hidden', mode !== 'internet_watchdog');
@@ -166,6 +269,10 @@ function renderConfig() {
   $('cfg-event-log-max').value = state.config.event_log_max_entries ?? 200;
   $('cfg-notification-cooldown').value = state.config.notification_cooldown_seconds ?? 60;
   $('cfg-admin-username').value = state.config.admin_username || 'admin';
+
+  const wifi = state.config.wifi || {};
+  renderWifiNetworks(wifi.saved_networks);
+  $('cfg-wifi-timeout').value = wifi.connect_timeout_ms ?? 15000;
 
   const central = state.config.central || {};
   $('cfg-central-enabled').checked = !!central.enabled;
@@ -390,6 +497,11 @@ async function handleConfigSave(event) {
   if (notifyToken) notifications.webhook_auth_token = notifyToken;
   payload.notifications = notifications;
 
+  payload.wifi = {
+    saved_networks: collectWifiNetworks(),
+    connect_timeout_ms: Number($('cfg-wifi-timeout').value || 15000),
+  };
+
   // Only enabled + base_urls are user-editable here. Protected identity fields
   // (enrollment_token, device_id, device_token, site_id) are intentionally
   // omitted so the device keeps its stored values.
@@ -471,6 +583,8 @@ function wireUi() {
   $('refresh-status').addEventListener('click', refreshAll);
   $('cfg-mode').addEventListener('change', renderModeSections);
   $('cfg-hub-url-add').addEventListener('click', () => addHubUrlRow(''));
+  $('cfg-wifi-add').addEventListener('click', () => addWifiRow({}));
+  $('cfg-wifi-scan').addEventListener('click', handleWifiScan);
   $('config-form').addEventListener('submit', handleConfigSave);
   $('ota-form').addEventListener('submit', handleOtaSubmit);
 }

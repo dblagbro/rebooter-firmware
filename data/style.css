@@ -364,3 +364,15 @@ pre {
 .hub-url-row .hub-url-input {
   flex: 1;
 }
+
+.wifi-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.wifi-row .wifi-ssid,
+.wifi-row .wifi-pass {
+  flex: 1 1 140px;
+}
