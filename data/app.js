@@ -121,7 +121,20 @@ function renderConfig() {
   $('cfg-monitor-interval').value = state.config.monitor_interval_seconds ?? 5;
   $('cfg-boot-warmup').value = state.config.boot_warmup_seconds ?? 30;
   $('cfg-manual-button').checked = !!state.config.manual_button_enabled;
+  $('cfg-status-led').checked = state.config.status_led_enabled !== false;
+  $('cfg-timezone').value = state.config.timezone || 'America/New_York';
+  $('cfg-event-log-max').value = state.config.event_log_max_entries ?? 200;
+  $('cfg-notification-cooldown').value = state.config.notification_cooldown_seconds ?? 60;
   $('cfg-admin-username').value = state.config.admin_username || 'admin';
+
+  const notifications = state.config.notifications || {};
+  $('cfg-notify-enabled').checked = !!notifications.enabled;
+  $('cfg-notify-webhook-url').value = notifications.webhook_url || '';
+  $('cfg-notify-webhook-token').value = '';
+  $('cfg-notify-on-trigger').checked = notifications.send_on_trigger !== false;
+  $('cfg-notify-on-recovery').checked = notifications.send_on_recovery !== false;
+  $('cfg-notify-on-max-cycles').checked = notifications.send_on_max_cycles_reached !== false;
+  $('cfg-notify-test-enabled').checked = notifications.send_test_notification_enabled !== false;
 
   const internet = state.config.internet || {};
   $('cfg-internet-targets').value = Array.isArray(internet.targets) ? internet.targets.join('\n') : '';
@@ -287,9 +300,13 @@ async function handleConfigSave(event) {
     device_name: $('cfg-device-name').value.trim(),
     current_mode: $('cfg-mode').value,
     relay_restore_behavior: $('cfg-restore').value,
+    timezone: $('cfg-timezone').value.trim() || 'America/New_York',
     monitor_interval_seconds: Number($('cfg-monitor-interval').value || 5),
     boot_warmup_seconds: Number($('cfg-boot-warmup').value || 30),
     manual_button_enabled: $('cfg-manual-button').checked,
+    status_led_enabled: $('cfg-status-led').checked,
+    event_log_max_entries: Number($('cfg-event-log-max').value || 200),
+    notification_cooldown_seconds: Number($('cfg-notification-cooldown').value || 60),
     admin_username: $('cfg-admin-username').value.trim(),
     internet: {
       targets: splitTargets($('cfg-internet-targets').value),
@@ -317,7 +334,18 @@ async function handleConfigSave(event) {
   const password = $('cfg-admin-password').value;
   if (password) payload.admin_password = password;
 
-  if (state.config?.notifications) payload.notifications = state.config.notifications;
+  const notifications = {
+    enabled: $('cfg-notify-enabled').checked,
+    webhook_url: $('cfg-notify-webhook-url').value.trim(),
+    send_on_trigger: $('cfg-notify-on-trigger').checked,
+    send_on_recovery: $('cfg-notify-on-recovery').checked,
+    send_on_max_cycles_reached: $('cfg-notify-on-max-cycles').checked,
+    send_test_notification_enabled: $('cfg-notify-test-enabled').checked,
+  };
+  const notifyToken = $('cfg-notify-webhook-token').value;
+  if (notifyToken) notifications.webhook_auth_token = notifyToken;
+  payload.notifications = notifications;
+
   if (state.config?.central) payload.central = state.config.central;
 
   try {

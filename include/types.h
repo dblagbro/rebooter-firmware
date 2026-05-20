@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <vector>
 
-static constexpr uint16_t CONFIG_SCHEMA_VERSION = 3;
+static constexpr uint16_t CONFIG_SCHEMA_VERSION = 4;
 
 enum class DeviceMode : uint8_t {
   SmartPlug = 0,
