@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <vector>
 
+#include "hub_defaults.h"
+
 static constexpr uint16_t CONFIG_SCHEMA_VERSION = 4;
 
 enum class DeviceMode : uint8_t {
@@ -63,9 +65,7 @@ struct NotificationConfig {
 
 struct CentralConfig {
   bool enabled = false;
-  std::vector<String> baseUrls = {
-    "https://www.voipguru.org/rebooter"
-  };
+  std::vector<String> baseUrls = HubDefaults::defaultBaseUrls();
   String enrollmentToken = "";
   String deviceAlias = "";
   String siteId = "";
