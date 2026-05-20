@@ -150,7 +150,11 @@ void setup() {
   g_led.begin();
   g_button.begin();
 
-  g_wifi.begin(g_config.deviceName, explicitRecoveryRequested);
+  g_wifi.begin(g_config.deviceName, &g_config, explicitRecoveryRequested);
+  if (g_wifi.configChangedByPortal()) {
+    g_cfgMgr.save(g_config);
+    g_eventLog.add("wifi", "Saved Wi-Fi/hub settings entered via setup portal");
+  }
   if (explicitRecoveryRequested && g_wifi.provisionedViaPortal()) {
     g_eventLog.add("boot", "Recovery provisioning completed; rebooting into normal mode");
     g_eventLog.flush();

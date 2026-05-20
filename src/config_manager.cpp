@@ -167,6 +167,22 @@ static void validateConfig(AppConfig& config) {
   config.notifications.webhookAuthToken.trim();
   if (config.notifications.webhookAuthToken.length() > 128) config.notifications.webhookAuthToken = "";
 
+  std::vector<WifiNetwork> cleanedNetworks;
+  for (auto network : config.wifi.savedNetworks) {
+    network.ssid.trim();
+    if (network.ssid.isEmpty() || network.ssid.length() > 32) continue;
+    if (network.password.length() > 64) network.password = "";
+    bool duplicate = false;
+    for (const auto& existing : cleanedNetworks) {
+      if (existing.ssid == network.ssid) { duplicate = true; break; }
+    }
+    if (duplicate) continue;
+    cleanedNetworks.push_back(network);
+    if (cleanedNetworks.size() >= 5) break;
+  }
+  config.wifi.savedNetworks = cleanedNetworks;
+  config.wifi.connectTimeoutMs = clampU32(config.wifi.connectTimeoutMs, 5000, 60000);
+
   for (auto& url : config.central.baseUrls) {
     url.trim();
   }
@@ -238,6 +254,18 @@ static bool loadFromPath(const char* path, AppConfig& out) {
   out.eventLogMaxEntries = doc["event_log_max_entries"] | out.eventLogMaxEntries;
   out.notificationCooldownSeconds = doc["notification_cooldown_seconds"] | out.notificationCooldownSeconds;
   out.lastRelayOn = doc["last_relay_on"] | out.lastRelayOn;
+
+  out.wifi.savedNetworks.clear();
+  if (doc["wifi"]["saved_networks"].is<JsonArray>()) {
+    for (JsonVariant v : doc["wifi"]["saved_networks"].as<JsonArray>()) {
+      WifiNetwork network;
+      network.ssid = String((const char*)(v["ssid"] | ""));
+      network.password = String((const char*)(v["password"] | ""));
+      out.wifi.savedNetworks.push_back(network);
+    }
+  }
+  out.wifi.connectTimeoutMs = doc["wifi"]["connect_timeout_ms"] | out.wifi.connectTimeoutMs;
+  out.wifi.preferStrongestKnown = doc["wifi"]["prefer_strongest_known"] | out.wifi.preferStrongestKnown;
 
   const String mode = doc["current_mode"] | "smart_plug";
   out.currentMode = modeFromString(mode);
@@ -321,6 +349,17 @@ static void writeConfigDocument(JsonDocument& doc, const AppConfig& clean) {
   doc["current_mode"] = modeToString(clean.currentMode);
   doc["relay_restore_behavior"] = restoreToString(clean.relayRestoreBehavior);
 
+  // The config layer stores Wi-Fi passwords in plaintext (it is the source of
+  // truth); the web layer is responsible for redacting them on read.
+  JsonArray savedNetworks = doc["wifi"]["saved_networks"].to<JsonArray>();
+  for (const auto& network : clean.wifi.savedNetworks) {
+    JsonObject entry = savedNetworks.add<JsonObject>();
+    entry["ssid"] = network.ssid;
+    entry["password"] = network.password;
+  }
+  doc["wifi"]["connect_timeout_ms"] = clean.wifi.connectTimeoutMs;
+  doc["wifi"]["prefer_strongest_known"] = clean.wifi.preferStrongestKnown;
+
   JsonArray targets = doc["internet"]["targets"].to<JsonArray>();
   for (const auto& t : clean.internet.targets) targets.add(t);
   doc["internet"]["failure_threshold_seconds"] = clean.internet.failureThresholdSeconds;
@@ -385,6 +424,10 @@ static bool writeConfigToPath(const char* path, const AppConfig& config) {
 
 static void overlayRecoveryPreservedState(AppConfig& restored, const AppConfig& current) {
   restored.lastRelayOn = current.lastRelayOn;
+
+  // Preserve the saved Wi-Fi list across an auto-recovery rollback so a
+  // recovery does not strand the device on a network it can no longer reach.
+  restored.wifi = current.wifi;
 
   restored.central.enabled = current.central.enabled;
   restored.central.baseUrls = current.central.baseUrls;

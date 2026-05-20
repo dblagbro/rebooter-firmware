@@ -14,57 +14,130 @@ const char* setupApPasswordOrNull() {
       ? nullptr
       : ProvisioningConfig::SETUP_AP_PASSWORD;
 }
+
+// Interval between non-blocking runtime reconnect attempts.
+constexpr uint32_t RECONNECT_ATTEMPT_INTERVAL_MS = 15000;
 }
 
-static bool tryDevWifi() {
-  if (!DevWifiConfig::ENABLED) return false;
+void WifiManagerService::buildCandidateList(const AppConfig* config) {
+  candidates_.clear();
+  connectTimeoutMs_ = 15000;
 
-  for (size_t i = 0; i < DevWifiConfig::NETWORK_COUNT; ++i) {
-    const auto& network = DevWifiConfig::NETWORKS[i];
-
-    Serial.print("Trying dev Wi-Fi SSID: ");
-    Serial.println(network.ssid);
-
-    WiFi.mode(WIFI_STA);
-    WiFi.persistent(true);
-    WiFi.begin(network.ssid, network.password);
-
-    const uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED &&
-           millis() - start < DevWifiConfig::CONNECT_TIMEOUT_MS) {
-      delay(100);
-      yield();
+  // Tier 1: user-managed saved networks, in priority order.
+  if (config != nullptr) {
+    connectTimeoutMs_ = config->wifi.connectTimeoutMs;
+    for (const auto& network : config->wifi.savedNetworks) {
+      if (network.ssid.isEmpty()) continue;
+      Candidate candidate;
+      candidate.ssid = network.ssid;
+      candidate.password = network.password;
+      candidate.fromSaved = true;
+      candidates_.push_back(candidate);
     }
-
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.print("Connected to dev Wi-Fi. IP: ");
-      Serial.println(WiFi.localIP());
-      return true;
-    }
-
-    Serial.print("Dev Wi-Fi connect timed out for SSID: ");
-    Serial.println(network.ssid);
-    WiFi.disconnect();
-    delay(250);
   }
 
-  Serial.println("All dev Wi-Fi attempts timed out, falling back to captive portal.");
-  return false;
+  // Tier 2: built-in bench/dev networks (compile-time fallback). These are
+  // never copied into the saved list; they exist so a wiped config still
+  // joins the bench networks.
+  if (DevWifiConfig::ENABLED) {
+    for (size_t i = 0; i < DevWifiConfig::NETWORK_COUNT; ++i) {
+      const auto& network = DevWifiConfig::NETWORKS[i];
+      Candidate candidate;
+      candidate.ssid = network.ssid;
+      candidate.password = network.password;
+      candidate.fromSaved = false;
+      candidates_.push_back(candidate);
+    }
+  }
 }
 
-bool WifiManagerService::begin(const String& apName, bool forcePortal) {
-  provisionedViaPortal_ = false;
-  if (!forcePortal && tryDevWifi()) {
-    captivePortal_ = false;
-    setupApName_ = ProvisioningConfig::setupApName(ESP.getChipId());
+bool WifiManagerService::attemptCandidate(const Candidate& candidate) {
+  Serial.print("Trying Wi-Fi SSID: ");
+  Serial.print(candidate.ssid);
+  Serial.println(candidate.fromSaved ? " (saved)" : " (built-in)");
+
+  WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);
+  if (candidate.password.isEmpty()) {
+    WiFi.begin(candidate.ssid.c_str());
+  } else {
+    WiFi.begin(candidate.ssid.c_str(), candidate.password.c_str());
+  }
+
+  const uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < connectTimeoutMs_) {
+    delay(100);
+    yield();
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("Connected. IP: ");
+    Serial.println(WiFi.localIP());
     return true;
   }
 
+  Serial.print("Wi-Fi connect timed out for SSID: ");
+  Serial.println(candidate.ssid);
+  WiFi.disconnect();
+  delay(250);
+  return false;
+}
+
+bool WifiManagerService::walkCandidates() {
+  if (candidates_.empty()) return false;
+
+  // One boot-time scan so we only attempt SSIDs actually present, avoiding a
+  // full per-network timeout on absent networks. The scan result is freed
+  // immediately. If the scan fails we fall back to attempting every candidate.
+  bool haveScan = false;
+  int scanCount = WiFi.scanNetworks();
+  std::vector<String> visibleSsids;
+  if (scanCount > 0) {
+    haveScan = true;
+    for (int i = 0; i < scanCount; ++i) {
+      visibleSsids.push_back(WiFi.SSID(i));
+    }
+  }
+  WiFi.scanDelete();
+
+  for (const auto& candidate : candidates_) {
+    if (haveScan) {
+      bool present = false;
+      for (const auto& ssid : visibleSsids) {
+        if (ssid == candidate.ssid) { present = true; break; }
+      }
+      if (!present) {
+        Serial.print("Skipping absent SSID: ");
+        Serial.println(candidate.ssid);
+        continue;
+      }
+    }
+    if (attemptCandidate(candidate)) return true;
+  }
+  return false;
+}
+
+bool WifiManagerService::startPortal(const String& apName, bool forcePortal,
+                                     AppConfig* config) {
   setupApName_ = ProvisioningConfig::setupApName(ESP.getChipId());
   wm.setTitle("Rebooter Setup");
   wm.setConfigPortalTimeout(ProvisioningConfig::CONFIG_PORTAL_TIMEOUT_SECONDS);
   wm.setDebugOutput(false);
   wm.setHostname(apName.c_str());
+
+  // Option A: keep tzapu for the AP/DHCP/DNS mechanics, but extend its portal
+  // page with our own fields so the operator can seed a prioritized saved
+  // network and a hub URL. Captured after the portal returns and written into
+  // AppConfig, which is the single source of truth for boot ordering.
+  WiFiManagerParameter savedSsidParam("rb_ssid", "Extra saved Wi-Fi SSID (optional)", "", 32);
+  WiFiManagerParameter savedPassParam("rb_pass", "Extra saved Wi-Fi password", "", 64);
+  WiFiManagerParameter hubUrlParam("rb_hub", "Hub URL (optional)", "", 192);
+  if (config != nullptr) {
+    wm.addParameter(&savedSsidParam);
+    wm.addParameter(&savedPassParam);
+    wm.addParameter(&hubUrlParam);
+  }
+
   if (forcePortal) {
     WiFi.disconnect(false);
     delay(250);
@@ -89,10 +162,117 @@ bool WifiManagerService::begin(const String& apName, bool forcePortal) {
     Serial.print("Provisioned Wi-Fi connected. IP: ");
     Serial.println(WiFi.localIP());
   }
+
+  // Persist any operator-entered fields into AppConfig. The caller is
+  // responsible for committing the config to flash.
+  if (config != nullptr) {
+    String extraSsid = String(savedSsidParam.getValue());
+    extraSsid.trim();
+    if (!extraSsid.isEmpty()) {
+      bool exists = false;
+      for (auto& network : config->wifi.savedNetworks) {
+        if (network.ssid == extraSsid) {
+          network.password = String(savedPassParam.getValue());
+          exists = true;
+          break;
+        }
+      }
+      if (!exists && config->wifi.savedNetworks.size() < 5) {
+        WifiNetwork network;
+        network.ssid = extraSsid;
+        network.password = String(savedPassParam.getValue());
+        config->wifi.savedNetworks.push_back(network);
+      }
+    }
+
+    String hubUrl = String(hubUrlParam.getValue());
+    hubUrl.trim();
+    if (!hubUrl.isEmpty()) {
+      bool exists = false;
+      for (const auto& url : config->central.baseUrls) {
+        if (url == hubUrl) { exists = true; break; }
+      }
+      if (!exists && config->central.baseUrls.size() < HubDefaults::MAX_BASE_URLS) {
+        config->central.baseUrls.push_back(hubUrl);
+      }
+    }
+  }
+
+  return ok;
+}
+
+bool WifiManagerService::begin(const String& apName, AppConfig* config,
+                               bool forcePortal) {
+  apName_ = apName;
+  provisionedViaPortal_ = false;
+  configChangedByPortal_ = false;
+  state_ = State::Init;
+
+  buildCandidateList(config);
+
+  // Boot-time state machine: saved networks -> dev networks -> AP portal.
+  if (!forcePortal) {
+    state_ = State::Connecting;
+    if (walkCandidates()) {
+      captivePortal_ = false;
+      setupApName_ = ProvisioningConfig::setupApName(ESP.getChipId());
+      state_ = State::Connected;
+      lastLinkOkMs_ = millis();
+      return true;
+    }
+    Serial.println("All saved and built-in Wi-Fi attempts failed; falling back to portal.");
+  }
+
+  state_ = State::Portal;
+  size_t savedBefore = config != nullptr ? config->wifi.savedNetworks.size() : 0;
+  size_t urlsBefore = config != nullptr ? config->central.baseUrls.size() : 0;
+  bool ok = startPortal(apName, forcePortal, config);
+  if (config != nullptr &&
+      (config->wifi.savedNetworks.size() != savedBefore ||
+       config->central.baseUrls.size() != urlsBefore)) {
+    configChangedByPortal_ = true;
+  }
+  if (ok) {
+    state_ = State::Connected;
+    lastLinkOkMs_ = millis();
+  }
   return ok;
 }
 
 void WifiManagerService::loop() {
+  // Runtime reconnect supervisor. SPECS 16.1 says do not reboot or drop to the
+  // AP portal on a transient runtime Wi-Fi loss, so this only re-walks the
+  // candidate list non-blockingly; it never enters the portal.
+  if (state_ == State::Portal) return;
+
+  const uint32_t now = millis();
+  if (WiFi.status() == WL_CONNECTED) {
+    lastLinkOkMs_ = now;
+    if (state_ == State::Reconnecting) {
+      Serial.println("Wi-Fi link recovered.");
+    }
+    state_ = State::Connected;
+    return;
+  }
+
+  // Link is down. Wait one connect-timeout budget before treating it as a real
+  // drop so a brief blip does not trigger reconnection churn.
+  if (now - lastLinkOkMs_ < connectTimeoutMs_) return;
+
+  state_ = State::Reconnecting;
+  if (now < nextReconnectAttemptMs_) return;
+  nextReconnectAttemptMs_ = now + RECONNECT_ATTEMPT_INTERVAL_MS;
+
+  // Attempt one candidate per supervisor tick. attemptCandidate() blocks for at
+  // most one connect-timeout budget; that is acceptable here because the device
+  // has no Wi-Fi to serve anyway while disconnected.
+  for (const auto& candidate : candidates_) {
+    if (attemptCandidate(candidate)) {
+      lastLinkOkMs_ = millis();
+      state_ = State::Connected;
+      return;
+    }
+  }
 }
 
 bool WifiManagerService::isConnected() const {
@@ -115,6 +295,10 @@ bool WifiManagerService::provisionedViaPortal() const {
   return provisionedViaPortal_;
 }
 
+bool WifiManagerService::configChangedByPortal() const {
+  return configChangedByPortal_;
+}
+
 void WifiManagerService::clearProvisionedCredentials() {
   wm.resetSettings();
   WiFi.persistent(true);
@@ -122,4 +306,25 @@ void WifiManagerService::clearProvisionedCredentials() {
   delay(250);
   captivePortal_ = false;
   provisionedViaPortal_ = false;
+}
+
+String WifiManagerService::scanNetworksJson() {
+  String out = "[";
+  int count = WiFi.scanNetworks();
+  for (int i = 0; i < count; ++i) {
+    if (i > 0) out += ",";
+    String ssid = WiFi.SSID(i);
+    ssid.replace("\\", "\\\\");
+    ssid.replace("\"", "\\\"");
+    out += "{\"ssid\":\"";
+    out += ssid;
+    out += "\",\"rssi\":";
+    out += String(WiFi.RSSI(i));
+    out += ",\"secure\":";
+    out += (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? "false" : "true";
+    out += "}";
+  }
+  out += "]";
+  WiFi.scanDelete();
+  return out;
 }

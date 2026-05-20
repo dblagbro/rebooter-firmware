@@ -184,6 +184,21 @@
           </section>
 
           <section class="mode-section">
+            <h3>Wi-Fi Networks</h3>
+            <p class="hint">Saved networks are tried in priority order on boot (top first), then the built-in default networks, then the setup access point. Passwords are write-only; leave a password field blank to keep the stored one.</p>
+            <div id="cfg-wifi-networks" class="repeat-rows"></div>
+            <div class="actions">
+              <button id="cfg-wifi-add" type="button" class="secondary">Add network</button>
+              <button id="cfg-wifi-scan" type="button" class="secondary" data-protected="true">Scan</button>
+            </div>
+            <p class="hint" id="cfg-wifi-scan-result"></p>
+            <label>
+              <span class="label-row"><span>Connect Timeout per network (ms)</span><details class="field-help"><summary aria-label="Help for Connect Timeout">?</summary><div class="help-card">How long the device waits for each network before moving to the next candidate. The device clamps this to 5000-60000 ms.</div></details></span>
+              <input id="cfg-wifi-timeout" name="wifi_connect_timeout_ms" type="number" min="5000" max="60000">
+            </label>
+          </section>
+
+          <section class="mode-section">
             <h3>Central Service</h3>
             <label class="checkbox-row">
               <input id="cfg-central-enabled" type="checkbox">
