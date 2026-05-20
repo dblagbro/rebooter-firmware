@@ -95,6 +95,16 @@ struct PowerAnalyticsConfig {
   bool includeFrequency = true;
 };
 
+struct DiscoveryConfig {
+  // mDNS carries a ~1-2 KB standing heap cost and runs continuously
+  // alongside the central client. On low-heap S31 units that can erode the
+  // ~20 KB compact-mode floor, so it is OPT-IN / off by default. The
+  // near-free post-provisioning UDP burst is the always-on discovery path.
+  bool mdnsEnabled = false;
+  bool udpAnnounceEnabled = true;
+  uint16_t udpPort = 51999;
+};
+
 struct AppConfig {
   uint16_t schemaVersion = CONFIG_SCHEMA_VERSION;
   String deviceName = "Rebooter";
@@ -117,4 +127,5 @@ struct AppConfig {
   NotificationConfig notifications;
   CentralConfig central;
   PowerAnalyticsConfig power;
+  DiscoveryConfig discovery;
 };

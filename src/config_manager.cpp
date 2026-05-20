@@ -222,6 +222,12 @@ static void validateConfig(AppConfig& config) {
   // The CSE7766 path never produces a mains-frequency value; keep this off so the field
   // is not advertised as a real capability anywhere downstream.
   config.power.includeFrequency = false;
+
+  // Clamp the UDP discovery port out of the privileged range and away from
+  // the device's own services (HTTP 80). Fall back to the design default.
+  if (config.discovery.udpPort < 1024 || config.discovery.udpPort == 80) {
+    config.discovery.udpPort = 51999;
+  }
 }
 
 static bool loadFromPath(const char* path, AppConfig& out) {
@@ -328,6 +334,10 @@ static bool loadFromPath(const char* path, AppConfig& out) {
   out.power.includeWifiStats = doc["power"]["include_wifi_stats"] | out.power.includeWifiStats;
   out.power.includeFrequency = doc["power"]["include_frequency"] | out.power.includeFrequency;
 
+  out.discovery.mdnsEnabled = doc["discovery"]["mdns_enabled"] | out.discovery.mdnsEnabled;
+  out.discovery.udpAnnounceEnabled = doc["discovery"]["udp_announce_enabled"] | out.discovery.udpAnnounceEnabled;
+  out.discovery.udpPort = doc["discovery"]["udp_port"] | out.discovery.udpPort;
+
   validateConfig(out);
   return true;
 }
@@ -406,6 +416,10 @@ static void writeConfigDocument(JsonDocument& doc, const AppConfig& clean) {
   doc["power"]["batch_seconds"] = clean.power.batchSeconds;
   doc["power"]["include_wifi_stats"] = clean.power.includeWifiStats;
   doc["power"]["include_frequency"] = clean.power.includeFrequency;
+
+  doc["discovery"]["mdns_enabled"] = clean.discovery.mdnsEnabled;
+  doc["discovery"]["udp_announce_enabled"] = clean.discovery.udpAnnounceEnabled;
+  doc["discovery"]["udp_port"] = clean.discovery.udpPort;
 }
 
 static bool writeConfigToPath(const char* path, const AppConfig& config) {

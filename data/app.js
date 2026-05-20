@@ -341,6 +341,11 @@ function renderConfig() {
   $('cfg-central-enabled').checked = !!central.enabled;
   renderHubUrls(central.base_urls);
 
+  const discovery = state.config.discovery || {};
+  $('cfg-discovery-mdns').checked = !!discovery.mdns_enabled;
+  $('cfg-discovery-udp').checked = discovery.udp_announce_enabled !== false;
+  $('cfg-discovery-udp-port').value = discovery.udp_port ?? 51999;
+
   const notifications = state.config.notifications || {};
   $('cfg-notify-enabled').checked = !!notifications.enabled;
   $('cfg-notify-webhook-url').value = notifications.webhook_url || '';
@@ -598,6 +603,12 @@ async function handleConfigSave(event) {
   payload.central = {
     enabled: $('cfg-central-enabled').checked,
     base_urls: collectHubUrls(),
+  };
+
+  payload.discovery = {
+    mdns_enabled: $('cfg-discovery-mdns').checked,
+    udp_announce_enabled: $('cfg-discovery-udp').checked,
+    udp_port: Number($('cfg-discovery-udp-port').value || 51999),
   };
 
   try {

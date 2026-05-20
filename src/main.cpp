@@ -19,6 +19,7 @@
 #include "power_monitor.h"
 #include "time_sync_manager.h"
 #include "crash_recorder.h"
+#include "discovery_manager.h"
 #include "firmware_version.h"
 
 AppConfig g_config;
@@ -37,6 +38,7 @@ AuthManager g_auth;
 CentralClient g_central;
 PowerMonitor g_power;
 TimeSyncManager g_timeSync;
+DiscoveryManager g_discovery;
 static bool g_bootMarkedHealthy = false;
 static bool g_powerStarted = false;
 #ifdef SAFE_FALLBACK_TEST_BAD_BOOT
@@ -177,8 +179,13 @@ void setup() {
   g_ota.begin(&g_eventLog);
   g_auth.begin(&g_config, &g_eventLog);
   g_central.begin(&g_config, &g_status, &g_cfgMgr, &g_eventLog, &g_relay, &g_wifi, &g_power);
-  g_web.begin(&g_config, &g_status, &g_relay, &g_cfgMgr, &g_eventLog, &g_monitor, &g_ota, &g_auth, &g_wifi, &g_power);
+  g_discovery.begin(&g_config, &g_status);
+  g_web.begin(&g_config, &g_status, &g_relay, &g_cfgMgr, &g_eventLog, &g_monitor, &g_ota, &g_auth, &g_wifi, &g_power, &g_discovery);
   g_timeSync.begin(&g_status);
+  if (g_wifi.provisionedViaPortal()) {
+    // The app that just provisioned us is actively looking on the LAN.
+    g_discovery.onPortalProvisioned();
+  }
 
   g_led.setPattern(LedPattern::SlowBlink);
 }
@@ -203,6 +210,7 @@ void loop() {
   }
 
   g_central.loop();
+  g_discovery.loop();
 
   g_status.wifiConnected = g_wifi.isConnected();
   g_status.inCaptivePortal = g_wifi.inCaptivePortal();
