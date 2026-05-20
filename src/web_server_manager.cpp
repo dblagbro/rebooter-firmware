@@ -17,6 +17,7 @@
 #include "wifi_manager.h"
 #include "crash_recorder.h"
 #include "power_monitor.h"
+#include "discovery_manager.h"
 
 static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html>
@@ -1261,6 +1262,7 @@ static OtaManager* sOta = nullptr;
 static AuthManager* sAuth = nullptr;
 static WifiManagerService* sWifi = nullptr;
 static PowerMonitor* sPower = nullptr;
+static DiscoveryManager* sDiscovery = nullptr;
 
 static bool parseBaseUrl(const String& baseUrl, String& host, uint16_t& port, String& rootPath) {
   String url = baseUrl;
@@ -1488,6 +1490,10 @@ static void sendConfigJson(bool includeProtectedFields = false) {
   // include_frequency is intentionally not exposed: the CSE7766 path never produces a
   // mains-frequency value, so surfacing it as a settable field advertises a fake capability.
 
+  doc["discovery"]["mdns_enabled"] = sConfig->discovery.mdnsEnabled;
+  doc["discovery"]["udp_announce_enabled"] = sConfig->discovery.udpAnnounceEnabled;
+  doc["discovery"]["udp_port"] = sConfig->discovery.udpPort;
+
   String out;
   serializeJson(doc, out);
   server.send(200, "application/json", out);
@@ -1499,7 +1505,8 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
                              OtaManager* ota,
                              AuthManager* auth,
                              WifiManagerService* wifi,
-                             PowerMonitor* power) {
+                             PowerMonitor* power,
+                             DiscoveryManager* discovery) {
   config_ = config;
   status_ = status;
   sConfig = config;
@@ -1512,6 +1519,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   sAuth = auth;
   sWifi = wifi;
   sPower = power;
+  sDiscovery = discovery;
   server.collectHeaders("X-Rebooter-Auth");
 
   server.on("/api/status", HTTP_GET, []() {
@@ -1645,6 +1653,20 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   });
 
   server.on("/api/power/energy/reset", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
+
+  // On-demand LAN discovery UDP announce burst.
+  server.on("/api/discovery/announce", HTTP_POST, []() {
+    if (!requireAuth()) return;
+    if (!sConfig->discovery.udpAnnounceEnabled) {
+      server.send(409, "application/json",
+                  "{\"ok\":false,\"error\":\"udp announce disabled in config\"}");
+      return;
+    }
+    if (sDiscovery) sDiscovery->triggerAnnounceBurst();
+    server.send(200, "application/json", "{\"ok\":true}");
+  });
+
+  server.on("/api/discovery/announce", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
 
   server.on("/api/relay/on", HTTP_POST, []() {
     if (!requireAuth()) return;
@@ -1786,6 +1808,11 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     sConfig->power.batchSeconds = doc["power"]["batch_seconds"] | sConfig->power.batchSeconds;
     sConfig->power.includeWifiStats = doc["power"]["include_wifi_stats"] | sConfig->power.includeWifiStats;
     // include_frequency intentionally not accepted: no real frequency value is ever produced.
+
+    sConfig->discovery.mdnsEnabled = doc["discovery"]["mdns_enabled"] | sConfig->discovery.mdnsEnabled;
+    sConfig->discovery.udpAnnounceEnabled = doc["discovery"]["udp_announce_enabled"] | sConfig->discovery.udpAnnounceEnabled;
+    sConfig->discovery.udpPort = doc["discovery"]["udp_port"] | sConfig->discovery.udpPort;
+
     if (!sConfig->central.enrollmentToken.isEmpty() && sConfig->central.enrollmentToken != previousEnrollmentToken) {
       sConfig->central.deviceId = "";
       sConfig->central.deviceToken = "";

@@ -11,6 +11,7 @@ class OtaManager;
 class AuthManager;
 class WifiManagerService;
 class PowerMonitor;
+class DiscoveryManager;
 
 class WebServerManager {
 public:
@@ -20,7 +21,8 @@ public:
              OtaManager* ota,
              AuthManager* auth,
              WifiManagerService* wifi,
-             PowerMonitor* power);
+             PowerMonitor* power,
+             DiscoveryManager* discovery);
   void loop();
 private:
   AppConfig* config_ = nullptr;

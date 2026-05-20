@@ -213,6 +213,23 @@
             </div>
           </section>
 
+          <section class="mode-section">
+            <h3>LAN Discovery</h3>
+            <p class="hint">After setup, a mobile app finds this device on the LAN. The UDP announce burst is near-free and on by default. mDNS is opt-in because its responder holds 1-2 KB of heap continuously, which can stress low-heap units.</p>
+            <label class="checkbox-row">
+              <input id="cfg-discovery-mdns" type="checkbox">
+              <span class="label-row"><span>Enable mDNS responder (rebooter-xxxxxx.local)</span><details class="field-help"><summary aria-label="Help for mDNS">?</summary><div class="help-card">Advertises the device as a _rebooter._tcp service so Bonjour/NSD-aware apps can resolve it. Off by default to protect the heap floor on memory-constrained units.</div></details></span>
+            </label>
+            <label class="checkbox-row">
+              <input id="cfg-discovery-udp" type="checkbox">
+              <span class="label-row"><span>Enable UDP discovery announce burst</span><details class="field-help"><summary aria-label="Help for UDP Announce">?</summary><div class="help-card">Sends a short broadcast burst after provisioning and on boot so an app can find the device immediately. The burst is time-bounded and then goes silent.</div></details></span>
+            </label>
+            <label>
+              <span class="label-row"><span>UDP Announce Port</span><details class="field-help"><summary aria-label="Help for UDP Port">?</summary><div class="help-card">The broadcast port the device announces on. The device clamps this above 1024.</div></details></span>
+              <input id="cfg-discovery-udp-port" name="discovery_udp_port" type="number" min="1024" max="65535">
+            </label>
+          </section>
+
           <label>
             <span class="label-row"><span>Admin Username</span><details class="field-help"><summary aria-label="Help for Admin Username">?</summary><div class="help-card">This is the local username used to protect the device web UI and API after you set credentials. Keep it memorable, because this login is separate from any future central account.</div></details></span>
             <input id="cfg-admin-username" name="admin_username" maxlength="32" placeholder="admin">
