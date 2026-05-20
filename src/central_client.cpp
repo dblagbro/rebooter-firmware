@@ -9,6 +9,7 @@
 #include "config_manager.h"
 #include "event_log.h"
 #include "firmware_version.h"
+#include "power_monitor.h"
 #include "relay_controller.h"
 #include "status_payload.h"
 #include "wifi_manager.h"
@@ -27,20 +28,16 @@ static constexpr uint32_t MIN_SUCCESS_RETRY_DELAY_MS = 30000;
 static constexpr uint32_t REGISTERED_NO_TOKEN_RETRY_DELAY_MS = 300000;
 static constexpr uint32_t TRANSPORT_FAILURE_LOG_INTERVAL_MS = 120000;
 static constexpr uint32_t TRANSPORT_FAILURE_SLOT_DELAY_MS = 10000;
-static constexpr uint32_t TRANSPORT_FAILURE_POWER_FLOOR_MS = 60000;
 static constexpr uint32_t TRANSPORT_FAILURE_FIRMWARE_FLOOR_MS = 120000;
 static constexpr uint32_t REPORTED_CONFIG_STARTUP_DELAY_SECONDS = 600;
 static constexpr uint32_t REPORTED_CONFIG_INTERVAL_MS = 900000;
 static constexpr uint32_t COMPACT_HEARTBEAT_FREE_HEAP_THRESHOLD = 20000;
-static constexpr uint32_t COMPACT_POWER_UPLOAD_FREE_HEAP_THRESHOLD = 21000;
-static constexpr uint32_t COMPACT_POWER_UPLOAD_MIN_INTERVAL_MS = 60000;
 // Cap on hub base URLs attempted in a single failover cycle. With up to 10
 // configurable URLs, a fully-down list would otherwise do 10 sequential TLS
 // handshakes per cycle, which is the most expensive heap event in the
 // firmware. The rotating start point ensures every URL is still reachable
 // across cycles.
 static constexpr size_t MAX_ATTEMPTS_PER_CYCLE = 3;
-static constexpr uint32_t COMPACT_POWER_UPLOAD_STARTUP_DELAY_MS = 30000;
 
 String summarizeResponse(const String& response, size_t maxLen = 180) {
   String out = response;
@@ -121,13 +118,14 @@ RelayRestoreBehavior restoreBehaviorFromString(const String& value) {
 }
 
 void CentralClient::begin(AppConfig* config, RuntimeStatus* status, ConfigManager* cfgMgr, EventLog* eventLog,
-                          RelayController* relay, WifiManagerService* wifi) {
+                          RelayController* relay, WifiManagerService* wifi, PowerMonitor* power) {
   config_ = config;
   status_ = status;
   cfgMgr_ = cfgMgr;
   eventLog_ = eventLog;
   relay_ = relay;
   wifi_ = wifi;
+  power_ = power;
   retryBackoffMs_ = INITIAL_RETRY_DELAY_MS;
   // Already-registered devices do not need to resend the full reported
   // config blob on every boot. That 600s delayed heartbeat has become a
@@ -164,13 +162,6 @@ void CentralClient::scheduleSteadyStateWork(uint32_t now) {
   nextHeartbeatAt_ = now + INITIAL_HEARTBEAT_DELAY_MS;
   nextPollAt_ = now + INITIAL_POLL_DELAY_MS;
   nextFirmwareCheckAt_ = now + INITIAL_FIRMWARE_CHECK_DELAY_MS;
-  nextPowerUploadAt_ = 0;
-  if (config_ && config_->power.enabled) {
-    nextPowerUploadAt_ = now + powerUploadIntervalMs();
-    if (shouldUseCompactPowerUpload()) {
-      nextPowerUploadAt_ += COMPACT_POWER_UPLOAD_STARTUP_DELAY_MS;
-    }
-  }
   nextTransportSlotAt_ = now + CENTRAL_ACTION_SPACING_MS;
 }
 
@@ -180,18 +171,12 @@ void CentralClient::scheduleTransportFailureCooldown(uint32_t now, bool rateLimi
   const uint32_t baseDelay = retryBackoffMs_;
   const uint32_t announceDelay = min<uint32_t>(baseDelay, MAX_ANNOUNCE_RETRY_DELAY_MS);
   const uint32_t firmwareDelay = max<uint32_t>(baseDelay, TRANSPORT_FAILURE_FIRMWARE_FLOOR_MS);
-  const uint32_t powerDelay = max<uint32_t>(baseDelay, TRANSPORT_FAILURE_POWER_FLOOR_MS);
 
   nextAnnounceAttemptAt_ = max(nextAnnounceAttemptAt_, now + announceDelay);
   nextRegisterAttemptAt_ = max(nextRegisterAttemptAt_, now + baseDelay);
   nextHeartbeatAt_ = max(nextHeartbeatAt_, now + baseDelay);
   nextPollAt_ = max(nextPollAt_, now + baseDelay);
   nextFirmwareCheckAt_ = max(nextFirmwareCheckAt_, now + firmwareDelay);
-  if (config_ && config_->power.enabled) {
-    nextPowerUploadAt_ = max(nextPowerUploadAt_, now + powerDelay);
-  } else {
-    nextPowerUploadAt_ = 0;
-  }
   nextTransportSlotAt_ = max(nextTransportSlotAt_, now + min<uint32_t>(baseDelay, TRANSPORT_FAILURE_SLOT_DELAY_MS));
 }
 
@@ -217,19 +202,6 @@ bool CentralClient::shouldIncludeReportedConfig(uint32_t now) const {
 
 bool CentralClient::shouldUseCompactHeartbeat() const {
   return ESP.getFreeHeap() < COMPACT_HEARTBEAT_FREE_HEAP_THRESHOLD;
-}
-
-bool CentralClient::shouldUseCompactPowerUpload() const {
-  return ESP.getFreeHeap() < COMPACT_POWER_UPLOAD_FREE_HEAP_THRESHOLD;
-}
-
-uint32_t CentralClient::powerUploadIntervalMs() const {
-  if (!config_) return 60000UL;
-  uint32_t intervalMs = max<uint32_t>(config_->power.batchSeconds, 1) * 1000UL;
-  if (shouldUseCompactPowerUpload()) {
-    intervalMs = max<uint32_t>(intervalMs, COMPACT_POWER_UPLOAD_MIN_INTERVAL_MS);
-  }
-  return intervalMs;
 }
 
 String CentralClient::buildApiUrl(const String& baseUrl, const String& path) const {
@@ -784,128 +756,6 @@ bool CentralClient::sendHeartbeat() {
   return true;
 }
 
-void CentralClient::maybeQueuePowerSample() {
-  if (!config_ || !status_) return;
-  if (!config_->power.enabled) return;
-  if (WiFi.status() != WL_CONNECTED) return;
-
-  const uint32_t intervalMs = 1000UL / max<uint8_t>(config_->power.sampleRateHz, 1);
-  const uint32_t now = millis();
-  if (now < nextPowerSampleAt_) return;
-
-  nextPowerSampleAt_ = now + intervalMs;
-
-  PowerSampleRecord sample;
-  sample.rssiDbm = static_cast<int16_t>(WiFi.RSSI());
-  const bool hasFreshRealSample =
-      status_->power.realSample &&
-      status_->power.lastSampleMillis > 0 &&
-      (now - status_->power.lastSampleMillis) <= 5000UL &&
-      status_->power.lastSampleMillis != lastQueuedRealSampleMillis_;
-
-  if (hasFreshRealSample) {
-    sample.sampledUptimeSeconds = status_->power.lastSampleUptimeSeconds;
-    sample.sampledUnixMs = status_->power.lastSampleUnixMs;
-    sample.sourceFlags = status_->power.sourceFlags;
-    sample.voltageV = status_->power.voltageV;
-    sample.currentMa = status_->power.currentMa;
-    sample.estimatedCurrentMa = status_->power.estimatedCurrentMa;
-    sample.powerW = status_->power.powerW;
-    sample.apparentPowerVa = status_->power.apparentPowerVa;
-    sample.powerFactor = status_->power.powerFactor;
-    sample.frequencyHz = status_->power.frequencyHz;
-    sample.energyWh = status_->power.energyWh;
-    lastQueuedRealSampleMillis_ = status_->power.lastSampleMillis;
-  } else {
-    sample.sampledUptimeSeconds = status_->uptimeSeconds;
-    sample.sourceFlags = POWER_SAMPLE_FLAG_SYNTHETIC;
-  }
-
-  powerSamples_.push_back(sample);
-
-  const bool compactUpload = shouldUseCompactPowerUpload();
-  const size_t maxBuffered = compactUpload
-      ? static_cast<size_t>(3)
-      : static_cast<size_t>(
-            max<uint16_t>(10, min<uint16_t>(config_->power.batchSeconds * config_->power.sampleRateHz, 120)));
-  if (powerSamples_.size() > maxBuffered) {
-    powerSamples_.erase(powerSamples_.begin(), powerSamples_.begin() + (powerSamples_.size() - maxBuffered));
-  }
-}
-
-bool CentralClient::sendPowerSamples() {
-  if (!config_ || powerSamples_.empty()) return false;
-  if (config_->central.deviceId.isEmpty() || config_->central.deviceToken.isEmpty()) return false;
-
-  const bool compactUpload = shouldUseCompactPowerUpload();
-  JsonDocument doc;
-  doc["device_id"] = config_->central.deviceId;
-  JsonArray samples = doc["samples"].to<JsonArray>();
-  const size_t startIndex = compactUpload && !powerSamples_.empty() ? (powerSamples_.size() - 1) : 0;
-  for (size_t idx = startIndex; idx < powerSamples_.size(); ++idx) {
-    const auto& sample = powerSamples_[idx];
-    JsonObject row = samples.add<JsonObject>();
-    row["sampled_uptime_seconds"] = sample.sampledUptimeSeconds;
-    if (sample.sampledUnixMs > 0) {
-      row["sampled_unix_ms"] = sample.sampledUnixMs;
-    }
-    row["source"] = (sample.sourceFlags & POWER_SAMPLE_FLAG_REAL) ? "steady" : "synthetic";
-    row["source_flags"] = sample.sourceFlags;
-    if (!compactUpload && config_->power.includeWifiStats) {
-      row["rssi_dbm"] = sample.rssiDbm;
-    }
-    row["chip_type"] = "CSE7766";
-    if (sample.sourceFlags & POWER_SAMPLE_FLAG_REAL) {
-      if (sample.sourceFlags & POWER_SAMPLE_FLAG_VOLTAGE_VALID) {
-        row["v_v"] = sample.voltageV;
-      }
-      row["i_ma"] = sample.currentMa;
-      if (!compactUpload && (sample.sourceFlags & POWER_SAMPLE_FLAG_CURRENT_ESTIMATED)) {
-        row["i_ma_est"] = sample.estimatedCurrentMa;
-      }
-      row["p_w"] = sample.powerW;
-      if (!compactUpload) {
-        row["s_va"] = sample.apparentPowerVa;
-        row["pf"] = sample.powerFactor;
-      }
-      if (!compactUpload &&
-          config_->power.includeFrequency &&
-          (sample.sourceFlags & POWER_SAMPLE_FLAG_FREQUENCY_VALID)) {
-        row["hz"] = sample.frequencyHz;
-      }
-      if (!compactUpload &&
-          (sample.sourceFlags & POWER_SAMPLE_FLAG_ENERGY_VALID)) {
-        row["energy_wh"] = sample.energyWh;
-      }
-    }
-  }
-
-  String body;
-  body.reserve(static_cast<unsigned int>(measureJson(doc) + 16));
-  serializeJson(doc, body);
-
-  String response;
-  String selectedBaseUrl;
-  int code = -1;
-  if (!postWithoutResponseWithFallback("/device/power-samples", config_->central.deviceToken, body,
-                                       response, code, selectedBaseUrl)) {
-    logThrottled(lastPowerFailureLogAtMs_, "central", "Power-sample transport failed; backing off",
-                 TRANSPORT_FAILURE_LOG_INTERVAL_MS);
-    scheduleTransportFailureCooldown(millis(), false);
-    return false;
-  }
-
-  if (code < 200 || code >= 300) {
-    logThrottled(lastPowerFailureLogAtMs_, "central", "Power-sample upload failed; backing off",
-                 TRANSPORT_FAILURE_LOG_INTERVAL_MS);
-    scheduleTransportFailureCooldown(millis(), false);
-    return false;
-  }
-
-  powerSamples_.clear();
-  return true;
-}
-
 bool CentralClient::pollCommands() {
   if (!config_ || config_->central.deviceId.isEmpty() || config_->central.deviceToken.isEmpty()) return false;
 
@@ -1327,9 +1177,9 @@ bool CentralClient::executeCommand(const JsonObject& cmd, String& resultStatus,
       if (power["include_wifi_stats"].is<bool>()) {
         config_->power.includeWifiStats = power["include_wifi_stats"].as<bool>();
       }
-      if (power["include_frequency"].is<bool>()) {
-        config_->power.includeFrequency = power["include_frequency"].as<bool>();
-      }
+      // include_frequency is intentionally not applied: the CSE7766 path
+      // never produces a real mains-frequency value, so the field is kept
+      // off by validateConfig and not advertised as a capability.
     }
 
     cfgMgr_->save(*config_);
@@ -1366,7 +1216,6 @@ void CentralClient::loop() {
 
   if (!config_->central.enabled) {
     setState("disabled");
-    nextPowerUploadAt_ = 0;
     return;
   }
 
@@ -1386,7 +1235,6 @@ void CentralClient::loop() {
   }
 
   const uint32_t now = millis();
-  maybeQueuePowerSample();
   if (now < nextTransportSlotAt_) return;
 
   const bool hasDeviceToken = !config_->central.deviceId.isEmpty() && !config_->central.deviceToken.isEmpty();
@@ -1416,8 +1264,15 @@ void CentralClient::loop() {
   }
 
   if (now >= nextHeartbeatAt_) {
-    if (sendHeartbeat()) nextHeartbeatAt_ = now + (config_->central.heartbeatIntervalSeconds * 1000UL);
-    else nextHeartbeatAt_ = now + retryBackoffMs_;
+    if (sendHeartbeat()) {
+      nextHeartbeatAt_ = now + (config_->central.heartbeatIntervalSeconds * 1000UL);
+      // Power telemetry rides the heartbeat; once a cycle's aggregate has
+      // been reported, start a fresh rolling window so min/avg/max reflect
+      // the next interval rather than accumulating forever.
+      if (power_ && config_->power.enabled) power_->resetAggregate();
+    } else {
+      nextHeartbeatAt_ = now + retryBackoffMs_;
+    }
     nextTransportSlotAt_ = millis() + CENTRAL_ACTION_SPACING_MS;
     return;
   }
@@ -1435,17 +1290,5 @@ void CentralClient::loop() {
     }
     nextTransportSlotAt_ = millis() + CENTRAL_ACTION_SPACING_MS;
     return;
-  }
-
-  if (config_->power.enabled) {
-    if (nextPowerUploadAt_ == 0) nextPowerUploadAt_ = now + powerUploadIntervalMs();
-    if (now >= nextPowerUploadAt_) {
-      if (sendPowerSamples()) nextPowerUploadAt_ = now + powerUploadIntervalMs();
-      nextTransportSlotAt_ = millis() + CENTRAL_ACTION_SPACING_MS;
-      return;
-    }
-  } else {
-    powerSamples_.clear();
-    nextPowerUploadAt_ = 0;
   }
 }

@@ -250,6 +250,7 @@ function renderStatus() {
       : 'Device is up but Wi-Fi is not currently connected.';
   }
   setHealthPill(state.status.health_state);
+  renderPower(state.status);
   if (state.status.last_crash_present) {
     $('crash-summary').textContent = `A crash was recorded: ${state.status.last_crash_reason || 'unknown'}. Use Refresh Crash Dumps for details.`;
   } else {
@@ -259,6 +260,63 @@ function renderStatus() {
     ? 'Relay commands are locked until you unlock this browser tab with the local admin password.'
     : 'Relay commands are currently available without local auth.';
   renderAuth();
+}
+
+function renderPower(status) {
+  const enabled = !!status.power_analytics_enabled;
+  if (!enabled) {
+    $('power-note').textContent = 'Power metering is disabled. Enable it in the configuration form.';
+    ['power-v', 'power-a', 'power-w', 'power-pf', 'power-energy', 'power-window', 'power-frames']
+      .forEach((id) => { $(id).textContent = '-'; });
+    $('power-upload-mode').textContent = status.power_upload_mode || '-';
+    $('power-uart-hint').textContent = '';
+    return;
+  }
+  $('power-note').textContent = status.power_chip_seen
+    ? 'CSE7766 metering is active.'
+    : 'Power metering enabled but no CSE7766 frames seen yet.';
+  $('power-v').textContent = status.power_voltage_v != null ? `${status.power_voltage_v.toFixed(1)} V` : '-';
+  $('power-a').textContent = status.power_current_ma != null ? `${status.power_current_ma} mA` : '-';
+  $('power-w').textContent = status.power_power_w != null ? `${status.power_power_w.toFixed(2)} W` : '-';
+  $('power-pf').textContent = status.power_power_factor != null ? status.power_power_factor.toFixed(3) : '-';
+  $('power-energy').textContent = status.power_energy_wh != null ? `${status.power_energy_wh} Wh` : '-';
+  const agg = status.power_aggregate;
+  if (agg) {
+    $('power-window').textContent = `${agg.avg_w.toFixed(2)} / ${agg.min_w.toFixed(2)} / ${agg.max_w.toFixed(2)} W (${agg.sample_count} samples)`;
+  } else {
+    $('power-window').textContent = 'no window data yet';
+  }
+  $('power-frames').textContent = `${status.power_valid_frame_count ?? 0} / ${status.power_invalid_frame_count ?? 0}`;
+  $('power-upload-mode').textContent = status.power_upload_mode || '-';
+  $('power-uart-hint').textContent = status.power_uart_contended
+    ? 'GPIO3 appears contended by the serial debug header. Detach any USB-serial cable for reliable metering.'
+    : '';
+}
+
+async function refreshPowerRecent() {
+  try {
+    const samples = await fetchJson('/api/power/recent');
+    if (Array.isArray(samples) && samples.length) {
+      $('power-recent').textContent = JSON.stringify(samples, null, 2);
+      logMessage(`Loaded ${samples.length} recent power sample(s).`);
+    } else {
+      $('power-recent').textContent = 'No power samples buffered yet.';
+      logMessage('No recent power samples.');
+    }
+  } catch (error) {
+    $('power-recent').textContent = `Failed to load samples: ${error.message}`;
+    logMessage(`Power sample load failed: ${error.message}`);
+  }
+}
+
+async function handleEnergyReset() {
+  try {
+    await postJson('/api/power/energy/reset', {});
+    logMessage('Energy accumulator reset.');
+    await refreshStatus();
+  } catch (error) {
+    logMessage(`Energy reset failed: ${error.message}`);
+  }
 }
 
 function renderConfig() {
@@ -615,6 +673,8 @@ function wireUi() {
   $('refresh-status').addEventListener('click', refreshAll);
   $('crash-refresh').addEventListener('click', refreshCrashDumps);
   $('crash-clear').addEventListener('click', handleCrashClear);
+  $('power-refresh').addEventListener('click', refreshPowerRecent);
+  $('power-energy-reset').addEventListener('click', handleEnergyReset);
   $('cfg-mode').addEventListener('change', renderModeSections);
   $('cfg-hub-url-add').addEventListener('click', () => addHubUrlRow(''));
   $('cfg-wifi-add').addEventListener('click', () => addWifiRow({}));

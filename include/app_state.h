@@ -13,6 +13,22 @@ enum PowerSampleSourceFlags : uint8_t {
   POWER_SAMPLE_FLAG_CURRENT_ESTIMATED = 0x80,
 };
 
+// Fixed-size rolling power aggregate. Held in RAM only, never grows; the
+// heartbeat reads it and resets the window. This is the bounded replacement
+// for the standalone raw-sample HTTPS upload that crashes low-heap units.
+struct PowerAggregate {
+  bool hasData = false;
+  float minW = 0.0f;
+  float maxW = 0.0f;
+  float sumW = 0.0f;
+  uint32_t sampleCount = 0;
+  float lastV = 0.0f;
+  float lastA = 0.0f;
+  float lastPF = 1.0f;
+  uint32_t energyWh = 0;
+  uint32_t windowStartUptimeSeconds = 0;
+};
+
 struct PowerLiveStatus {
   bool chipSeen = false;
   bool realSample = false;
@@ -22,6 +38,9 @@ struct PowerLiveStatus {
   bool frequencyValid = false;
   bool energyValid = false;
   bool currentEstimated = false;
+  // True when the CSE7766 frame stream looks contended by the USB-serial
+  // debug header sharing GPIO3 (no chip seen + sustained invalid frames).
+  bool uartContended = false;
   uint8_t sourceFlags = 0;
   uint32_t lastSampleUptimeSeconds = 0;
   uint32_t lastSampleMillis = 0;
@@ -36,6 +55,7 @@ struct PowerLiveStatus {
   float powerFactor = 1.0f;
   float frequencyHz = 0.0f;
   uint32_t energyWh = 0;
+  PowerAggregate aggregate;
 };
 
 struct RuntimeStatus {

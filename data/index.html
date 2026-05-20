@@ -250,6 +250,29 @@
 
     <section class="band">
       <article class="panel">
+        <h2>Power</h2>
+        <p class="hint" id="power-note">Power metering is disabled.</p>
+        <dl class="kv" id="power-kv">
+          <div><dt>Voltage</dt><dd id="power-v">-</dd></div>
+          <div><dt>Current</dt><dd id="power-a">-</dd></div>
+          <div><dt>Power</dt><dd id="power-w">-</dd></div>
+          <div><dt>Power Factor</dt><dd id="power-pf">-</dd></div>
+          <div><dt>Energy</dt><dd id="power-energy">-</dd></div>
+          <div><dt>Window Avg / Min / Max W</dt><dd id="power-window">-</dd></div>
+          <div><dt>Valid / Invalid Frames</dt><dd id="power-frames">-</dd></div>
+          <div><dt>Upload Mode</dt><dd id="power-upload-mode">-</dd></div>
+        </dl>
+        <p class="hint" id="power-uart-hint"></p>
+        <div class="row">
+          <button id="power-refresh" class="secondary">Refresh Recent Samples</button>
+          <button id="power-energy-reset" data-protected="true">Reset Energy Counter</button>
+        </div>
+        <pre id="power-recent">Load recent samples to view the in-RAM ring.</pre>
+      </article>
+    </section>
+
+    <section class="band">
+      <article class="panel">
         <h2>Diagnostics &mdash; Last Crash</h2>
         <p class="hint" id="crash-summary">No crash recorded.</p>
         <div class="row">

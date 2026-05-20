@@ -14,6 +14,8 @@ String restoreToString(RelayRestoreBehavior value);
 void fillReportedConfig(JsonObject target, const AppConfig& config);
 void fillPowerStatus(JsonDocument& doc, const AppConfig& config,
                      const RuntimeStatus* status);
+void fillHeartbeatPowerSummary(JsonDocument& doc, const AppConfig& config,
+                               const RuntimeStatus* status);
 void fillHeartbeatDocument(JsonDocument& doc, const AppConfig& config,
                            const RuntimeStatus* status,
                            const String& firmwareVersion,

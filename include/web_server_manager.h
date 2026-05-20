@@ -10,6 +10,7 @@ class MonitorEngine;
 class OtaManager;
 class AuthManager;
 class WifiManagerService;
+class PowerMonitor;
 
 class WebServerManager {
 public:
@@ -18,7 +19,8 @@ public:
              EventLog* eventLog, MonitorEngine* monitor,
              OtaManager* ota,
              AuthManager* auth,
-             WifiManagerService* wifi);
+             WifiManagerService* wifi,
+             PowerMonitor* power);
   void loop();
 private:
   AppConfig* config_ = nullptr;
