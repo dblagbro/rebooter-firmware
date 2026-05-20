@@ -64,6 +64,8 @@ struct RuntimeStatus {
   String centralDeviceId = "";
   uint8_t consecutiveUnhealthyBoots = 0;
   bool bootHealthyMarked = false;
+  bool lastCrashPresent = false;
+  String lastCrashReason = "";
   bool timeSynced = false;
   uint64_t wallClockUnixMs = 0;
   // Device uptime-second stamp of the last successful central heartbeat.
