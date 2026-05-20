@@ -20,6 +20,11 @@ and central-hub integration.
    - `src/config_manager.cpp`
    - owns persisted config, boot-state tracking, recovery requests,
      last-known-good restore, and config validation
+   - full factory reset must clear persisted config, recovery markers,
+     and local event history
+   - intentional OTA / reboot / recovery transitions must be distinguishable
+     from crash-like early boots so planned restarts do not accumulate
+     recovery strikes
 
 3. local control plane
    - `src/web_server_manager.cpp`
@@ -36,6 +41,10 @@ and central-hub integration.
    - `src/monitor_engine.cpp`
    - `src/relay_controller.cpp`
    - `src/button_handler.cpp`
+   - `src/wifi_manager.cpp`
+   - explicit recovery provisioning may intentionally move the device into
+     setup AP mode, but a successful explicit recovery reprovision should
+     reboot back into a normal boot instead of lingering in recovery mode
 
 6. central integration
    - `src/central_client.cpp`
@@ -46,6 +55,21 @@ and central-hub integration.
    - `src/status_payload.cpp`
    - `src/event_log.cpp`
    - local status, central heartbeat payloads, and persisted event history
+
+8. time synchronization
+   - `src/time_sync_manager.cpp`
+   - owns lightweight NTP-based UTC wall-clock acquisition for telemetry
+     correlation work
+   - status and uploaded power samples may include both uptime-relative and
+     wall-clock timestamps; uptime remains the fallback when sync is absent
+
+9. power telemetry
+   - `src/power_monitor.cpp`
+   - owns CSE7766 frame parsing and live electrical readings
+   - real metering is delayed until the device is stably up on the LAN to
+     reduce boot-path risk on the bench/dev line
+   - low standby loads may have trustworthy voltage and power but only
+     estimated current; the API should make that distinction explicit
 
 ## Security model
 

@@ -11,15 +11,30 @@
 #include "firmware_version.h"
 #include "relay_controller.h"
 #include "status_payload.h"
+#include "wifi_manager.h"
 
 namespace {
 static constexpr uint32_t INITIAL_RETRY_DELAY_MS = 30000;
 static constexpr uint32_t MAX_RETRY_DELAY_MS = 300000;
 static constexpr uint32_t MAX_ANNOUNCE_RETRY_DELAY_MS = 60000;
-static constexpr uint32_t FIRMWARE_CHECK_INTERVAL_MS = 15000;
+static constexpr uint32_t FIRMWARE_CHECK_INTERVAL_MS = 900000;
+static constexpr uint32_t CENTRAL_ACTION_SPACING_MS = 1500;
+static constexpr uint32_t INITIAL_HEARTBEAT_DELAY_MS = 2000;
+static constexpr uint32_t INITIAL_POLL_DELAY_MS = 5000;
+static constexpr uint32_t INITIAL_FIRMWARE_CHECK_DELAY_MS = 900000;
 static constexpr int HTTP_BEGIN_FAILED = -1000;
 static constexpr uint32_t MIN_SUCCESS_RETRY_DELAY_MS = 30000;
 static constexpr uint32_t REGISTERED_NO_TOKEN_RETRY_DELAY_MS = 300000;
+static constexpr uint32_t TRANSPORT_FAILURE_LOG_INTERVAL_MS = 120000;
+static constexpr uint32_t TRANSPORT_FAILURE_SLOT_DELAY_MS = 10000;
+static constexpr uint32_t TRANSPORT_FAILURE_POWER_FLOOR_MS = 60000;
+static constexpr uint32_t TRANSPORT_FAILURE_FIRMWARE_FLOOR_MS = 120000;
+static constexpr uint32_t REPORTED_CONFIG_STARTUP_DELAY_SECONDS = 600;
+static constexpr uint32_t REPORTED_CONFIG_INTERVAL_MS = 900000;
+static constexpr uint32_t COMPACT_HEARTBEAT_FREE_HEAP_THRESHOLD = 20000;
+static constexpr uint32_t COMPACT_POWER_UPLOAD_FREE_HEAP_THRESHOLD = 21000;
+static constexpr uint32_t COMPACT_POWER_UPLOAD_MIN_INTERVAL_MS = 60000;
+static constexpr uint32_t COMPACT_POWER_UPLOAD_STARTUP_DELAY_MS = 30000;
 
 String summarizeResponse(const String& response, size_t maxLen = 180) {
   String out = response;
@@ -30,6 +45,15 @@ String summarizeResponse(const String& response, size_t maxLen = 180) {
     out = out.substring(0, maxLen) + "...";
   }
   return out;
+}
+
+bool looksLikeJsonEnvelope(const String& response) {
+  for (size_t i = 0; i < response.length(); ++i) {
+    const char ch = response[i];
+    if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') continue;
+    return ch == '{' || ch == '[';
+  }
+  return false;
 }
 
 String describeTransportFailure(const String& url, int code) {
@@ -90,13 +114,24 @@ RelayRestoreBehavior restoreBehaviorFromString(const String& value) {
 }
 }
 
-void CentralClient::begin(AppConfig* config, RuntimeStatus* status, ConfigManager* cfgMgr, EventLog* eventLog, RelayController* relay) {
+void CentralClient::begin(AppConfig* config, RuntimeStatus* status, ConfigManager* cfgMgr, EventLog* eventLog,
+                          RelayController* relay, WifiManagerService* wifi) {
   config_ = config;
   status_ = status;
   cfgMgr_ = cfgMgr;
   eventLog_ = eventLog;
   relay_ = relay;
+  wifi_ = wifi;
   retryBackoffMs_ = INITIAL_RETRY_DELAY_MS;
+  // Already-registered devices do not need to resend the full reported
+  // config blob on every boot. That 600s delayed heartbeat has become a
+  // repeatable crash trigger on the ESP8266 fleet, so only new /
+  // unregistered devices start with a pending config push. Fresh
+  // registrations still mark this true in registerDevice().
+  pendingReportedConfig_ = !(config_ && !config_->central.deviceId.isEmpty() &&
+                             !config_->central.deviceToken.isEmpty());
+  lastReportedConfigSentAtMs_ = 0;
+  steadyStateScheduled_ = false;
   if (status_) {
     status_->centralEnabled = config_ && config_->central.enabled;
     status_->centralRegistered = config_ && !config_->central.deviceId.isEmpty() && !config_->central.deviceToken.isEmpty();
@@ -117,6 +152,78 @@ String CentralClient::effectiveAlias() const {
   if (!config_) return "Rebooter";
   if (!config_->central.deviceAlias.isEmpty()) return config_->central.deviceAlias;
   return config_->deviceName;
+}
+
+void CentralClient::scheduleSteadyStateWork(uint32_t now) {
+  nextHeartbeatAt_ = now + INITIAL_HEARTBEAT_DELAY_MS;
+  nextPollAt_ = now + INITIAL_POLL_DELAY_MS;
+  nextFirmwareCheckAt_ = now + INITIAL_FIRMWARE_CHECK_DELAY_MS;
+  nextPowerUploadAt_ = 0;
+  if (config_ && config_->power.enabled) {
+    nextPowerUploadAt_ = now + powerUploadIntervalMs();
+    if (shouldUseCompactPowerUpload()) {
+      nextPowerUploadAt_ += COMPACT_POWER_UPLOAD_STARTUP_DELAY_MS;
+    }
+  }
+  nextTransportSlotAt_ = now + CENTRAL_ACTION_SPACING_MS;
+}
+
+void CentralClient::scheduleTransportFailureCooldown(uint32_t now, bool rateLimited) {
+  scheduleRetry(rateLimited);
+
+  const uint32_t baseDelay = retryBackoffMs_;
+  const uint32_t announceDelay = min<uint32_t>(baseDelay, MAX_ANNOUNCE_RETRY_DELAY_MS);
+  const uint32_t firmwareDelay = max<uint32_t>(baseDelay, TRANSPORT_FAILURE_FIRMWARE_FLOOR_MS);
+  const uint32_t powerDelay = max<uint32_t>(baseDelay, TRANSPORT_FAILURE_POWER_FLOOR_MS);
+
+  nextAnnounceAttemptAt_ = max(nextAnnounceAttemptAt_, now + announceDelay);
+  nextRegisterAttemptAt_ = max(nextRegisterAttemptAt_, now + baseDelay);
+  nextHeartbeatAt_ = max(nextHeartbeatAt_, now + baseDelay);
+  nextPollAt_ = max(nextPollAt_, now + baseDelay);
+  nextFirmwareCheckAt_ = max(nextFirmwareCheckAt_, now + firmwareDelay);
+  if (config_ && config_->power.enabled) {
+    nextPowerUploadAt_ = max(nextPowerUploadAt_, now + powerDelay);
+  } else {
+    nextPowerUploadAt_ = 0;
+  }
+  nextTransportSlotAt_ = max(nextTransportSlotAt_, now + min<uint32_t>(baseDelay, TRANSPORT_FAILURE_SLOT_DELAY_MS));
+}
+
+void CentralClient::logThrottled(uint32_t& lastAtMs, const String& type, const String& message,
+                                 uint32_t minIntervalMs) {
+  if (!eventLog_) return;
+  const uint32_t now = millis();
+  if (lastAtMs != 0 && (now - lastAtMs) < minIntervalMs) return;
+  lastAtMs = now;
+  eventLog_->add(type, message);
+}
+
+bool CentralClient::shouldIncludeReportedConfig(uint32_t now) const {
+  if (!status_ || !status_->bootHealthyMarked) return false;
+  if (status_->uptimeSeconds < REPORTED_CONFIG_STARTUP_DELAY_SECONDS) return false;
+  if (retryBackoffMs_ != INITIAL_RETRY_DELAY_MS) return false;
+  if (pendingReportedConfig_) {
+    return status_->centralLastHeartbeatSeconds > 0;
+  }
+  if (lastReportedConfigSentAtMs_ == 0) return false;
+  return (now - lastReportedConfigSentAtMs_) >= REPORTED_CONFIG_INTERVAL_MS;
+}
+
+bool CentralClient::shouldUseCompactHeartbeat() const {
+  return ESP.getFreeHeap() < COMPACT_HEARTBEAT_FREE_HEAP_THRESHOLD;
+}
+
+bool CentralClient::shouldUseCompactPowerUpload() const {
+  return ESP.getFreeHeap() < COMPACT_POWER_UPLOAD_FREE_HEAP_THRESHOLD;
+}
+
+uint32_t CentralClient::powerUploadIntervalMs() const {
+  if (!config_) return 60000UL;
+  uint32_t intervalMs = max<uint32_t>(config_->power.batchSeconds, 1) * 1000UL;
+  if (shouldUseCompactPowerUpload()) {
+    intervalMs = max<uint32_t>(intervalMs, COMPACT_POWER_UPLOAD_MIN_INTERVAL_MS);
+  }
+  return intervalMs;
 }
 
 String CentralClient::buildApiUrl(const String& baseUrl, const String& path) const {
@@ -150,10 +257,11 @@ bool CentralClient::announceDevice() {
     const String detail = response.isEmpty() ? String("unknown transport error") : summarizeResponse(response);
     Serial.print("Central announce transport failed: ");
     Serial.println(detail);
-    if (eventLog_) eventLog_->add("central", "Announce transport failed: " + detail);
+    logThrottled(lastAnnounceFailureLogAtMs_, "central", "Announce transport failed; backing off",
+                 TRANSPORT_FAILURE_LOG_INTERVAL_MS);
     setState("announce_transport_failed");
-    scheduleRetry(false);
-    nextAnnounceAttemptAt_ = millis() + min<uint32_t>(retryBackoffMs_, MAX_ANNOUNCE_RETRY_DELAY_MS);
+    const uint32_t now = millis();
+    scheduleTransportFailureCooldown(now, false);
     return false;
   }
 
@@ -284,6 +392,7 @@ bool CentralClient::postWithFallback(const String& path, const String& authToken
     client->setBufferSizes(512, 512);
     HTTPClient http;
     const String url = buildApiUrl(baseUrl, path);
+    http.setTimeout(4000);
     if (!http.begin(*client, url)) {
       httpCode = HTTP_BEGIN_FAILED;
       failureSummary = describeTransportFailure(url, httpCode);
@@ -294,12 +403,91 @@ bool CentralClient::postWithFallback(const String& path, const String& authToken
     if (!authToken.isEmpty()) http.addHeader("Authorization", "Bearer " + authToken);
 
     httpCode = http.POST(body);
-    responseBody = http.getString();
+    responseBody = httpCode > 0 ? http.getString() : "";
     http.end();
 
-    if ((httpCode >= 200 && httpCode < 300) || httpCode == 429 || (httpCode >= 400 && httpCode < 500)) {
+    if (httpCode >= 200 && httpCode < 300) {
       selectedBaseUrl = baseUrl;
       return true;
+    }
+
+    if (httpCode == 429) {
+      selectedBaseUrl = baseUrl;
+      return true;
+    }
+
+    if (httpCode >= 400 && httpCode < 500) {
+      if (looksLikeJsonEnvelope(responseBody)) {
+        selectedBaseUrl = baseUrl;
+        return true;
+      }
+      failureSummary = summarizeResponse(responseBody);
+      continue;
+    }
+
+    if (httpCode >= 500) {
+      continue;
+    }
+
+    failureSummary = describeTransportFailure(url, httpCode);
+  }
+
+  responseBody = failureSummary;
+  selectedBaseUrl = "";
+  return false;
+}
+
+bool CentralClient::postWithoutResponseWithFallback(const String& path, const String& authToken,
+                                                    const String& body, String& responseBody,
+                                                    int& httpCode, String& selectedBaseUrl) {
+  if (!config_) return false;
+  const size_t count = config_->central.baseUrls.size();
+  if (count == 0) return false;
+
+  String failureSummary;
+  for (size_t i = 0; i < count; ++i) {
+    const String baseUrl = config_->central.baseUrls[i];
+    std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
+    client->setInsecure();
+    client->setBufferSizes(512, 512);
+    HTTPClient http;
+    const String url = buildApiUrl(baseUrl, path);
+    http.setTimeout(4000);
+    if (!http.begin(*client, url)) {
+      httpCode = HTTP_BEGIN_FAILED;
+      failureSummary = describeTransportFailure(url, httpCode);
+      continue;
+    }
+
+    http.addHeader("Content-Type", "application/json");
+    if (!authToken.isEmpty()) http.addHeader("Authorization", "Bearer " + authToken);
+
+    httpCode = http.POST(body);
+
+    if (httpCode >= 200 && httpCode < 300) {
+      http.end();
+      selectedBaseUrl = baseUrl;
+      responseBody = "";
+      return true;
+    }
+
+    if (httpCode == 429) {
+      http.end();
+      selectedBaseUrl = baseUrl;
+      responseBody = "";
+      return true;
+    }
+
+    responseBody = httpCode > 0 ? http.getString() : "";
+    http.end();
+
+    if (httpCode >= 400 && httpCode < 500) {
+      if (looksLikeJsonEnvelope(responseBody)) {
+        selectedBaseUrl = baseUrl;
+        return true;
+      }
+      failureSummary = summarizeResponse(responseBody);
+      continue;
     }
 
     if (httpCode >= 500) {
@@ -329,6 +517,7 @@ bool CentralClient::getWithFallback(const String& path, const String& authToken,
     client->setBufferSizes(512, 512);
     HTTPClient http;
     const String url = buildApiUrl(baseUrl, path);
+    http.setTimeout(4000);
     if (!http.begin(*client, url)) {
       httpCode = HTTP_BEGIN_FAILED;
       failureSummary = describeTransportFailure(url, httpCode);
@@ -337,12 +526,26 @@ bool CentralClient::getWithFallback(const String& path, const String& authToken,
 
     if (!authToken.isEmpty()) http.addHeader("Authorization", "Bearer " + authToken);
     httpCode = http.GET();
-    responseBody = http.getString();
+    responseBody = httpCode > 0 ? http.getString() : "";
     http.end();
 
-    if ((httpCode >= 200 && httpCode < 300) || httpCode == 429 || (httpCode >= 400 && httpCode < 500)) {
+    if (httpCode >= 200 && httpCode < 300) {
       selectedBaseUrl = baseUrl;
       return true;
+    }
+
+    if (httpCode == 429) {
+      selectedBaseUrl = baseUrl;
+      return true;
+    }
+
+    if (httpCode >= 400 && httpCode < 500) {
+      if (looksLikeJsonEnvelope(responseBody)) {
+        selectedBaseUrl = baseUrl;
+        return true;
+      }
+      failureSummary = summarizeResponse(responseBody);
+      continue;
     }
 
     if (httpCode >= 500) {
@@ -402,8 +605,10 @@ bool CentralClient::registerDevice() {
     const String detail = response.isEmpty() ? String("unknown transport error") : summarizeResponse(response);
     Serial.print("Central register transport failed: ");
     Serial.println(detail);
-    if (eventLog_) eventLog_->add("central", "Device registration transport failed: " + detail);
+    logThrottled(lastRegisterFailureLogAtMs_, "central", "Device registration transport failed; backing off",
+                 TRANSPORT_FAILURE_LOG_INTERVAL_MS);
     setState("register_transport_failed");
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
@@ -419,8 +624,7 @@ bool CentralClient::registerDevice() {
     config_->central.enrollmentToken = "";
     cfgMgr_->save(*config_);
     setState("enrollment_rejected");
-    scheduleRetry(false);
-    nextAnnounceAttemptAt_ = millis() + min<uint32_t>(retryBackoffMs_, MAX_ANNOUNCE_RETRY_DELAY_MS);
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
@@ -431,8 +635,7 @@ bool CentralClient::registerDevice() {
       config_->central.enrollmentToken = "";
       cfgMgr_->save(*config_);
       setState("enrollment_consumed");
-      scheduleRetry(false);
-      nextAnnounceAttemptAt_ = millis() + min<uint32_t>(retryBackoffMs_, MAX_ANNOUNCE_RETRY_DELAY_MS);
+      scheduleTransportFailureCooldown(millis(), false);
       return false;
     }
   }
@@ -442,7 +645,7 @@ bool CentralClient::registerDevice() {
     Serial.println(response);
     if (eventLog_) eventLog_->add("central", "Device registration failed (" + String(code) + "): " + summarizeResponse(response));
     setState("register_failed");
-    scheduleRetry(false);
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
@@ -465,6 +668,8 @@ bool CentralClient::registerDevice() {
   config_->central.pollIntervalSeconds = data["poll_interval_seconds"] | config_->central.pollIntervalSeconds;
   config_->central.heartbeatIntervalSeconds = data["heartbeat_interval_seconds"] | config_->central.heartbeatIntervalSeconds;
   cfgMgr_->save(*config_);
+  pendingReportedConfig_ = true;
+  lastReportedConfigSentAtMs_ = 0;
 
   status_->centralRegistered = true;
   status_->centralDeviceId = deviceId;
@@ -472,8 +677,8 @@ bool CentralClient::registerDevice() {
   setState("registered");
   markSuccess();
 
-  nextHeartbeatAt_ = millis();
-  nextPollAt_ = millis();
+  scheduleSteadyStateWork(millis());
+  steadyStateScheduled_ = true;
   return true;
 }
 
@@ -482,8 +687,17 @@ bool CentralClient::sendHeartbeat() {
 
   setState("heartbeat");
 
+  const uint32_t now = millis();
+  const bool includeReportedConfig = shouldIncludeReportedConfig(now);
+  const bool compactHeartbeat = shouldUseCompactHeartbeat();
+  if (compactHeartbeat) {
+    logThrottled(lastCompactHeartbeatLogAtMs_, "central",
+                 "Low-heap compact heartbeat mode active",
+                 TRANSPORT_FAILURE_LOG_INTERVAL_MS);
+  }
   JsonDocument doc;
-  StatusPayload::fillHeartbeatDocument(doc, *config_, status_, FIRMWARE_VERSION);
+  StatusPayload::fillHeartbeatDocument(doc, *config_, status_, FIRMWARE_VERSION,
+                                       includeReportedConfig, compactHeartbeat);
 
   String body;
   serializeJson(doc, body);
@@ -494,15 +708,16 @@ bool CentralClient::sendHeartbeat() {
     const String detail = response.isEmpty() ? String("unknown transport error") : summarizeResponse(response);
     Serial.print("Central heartbeat transport failed: ");
     Serial.println(detail);
-    if (eventLog_) eventLog_->add("central", "Heartbeat transport failed: " + detail);
+    logThrottled(lastHeartbeatFailureLogAtMs_, "central", "Heartbeat transport failed; backing off",
+                 TRANSPORT_FAILURE_LOG_INTERVAL_MS);
     setState("heartbeat_transport_failed");
-    scheduleRetry(false);
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
   if (code == 429) {
     setState("heartbeat_rate_limited");
-    scheduleRetry(true);
+    scheduleTransportFailureCooldown(millis(), true);
     return false;
   }
 
@@ -510,15 +725,14 @@ bool CentralClient::sendHeartbeat() {
     if (eventLog_) eventLog_->add("central", "Heartbeat unauthorized; clearing cached registration");
     clearCentralRegistration(config_, status_, cfgMgr_);
     setState("reauth_required");
-    scheduleRetry(false);
-    nextRegisterAttemptAt_ = millis() + retryBackoffMs_;
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
   if (code < 200 || code >= 300) {
     Serial.printf("Central heartbeat failed: %d\n", code);
     setState("heartbeat_failed");
-    scheduleRetry(false);
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
@@ -532,6 +746,10 @@ bool CentralClient::sendHeartbeat() {
   if (status_) status_->centralLastHeartbeatSeconds = millis() / 1000;
   setState("heartbeat_ok");
   markSuccess();
+  if (includeReportedConfig) {
+    pendingReportedConfig_ = false;
+    lastReportedConfigSentAtMs_ = now;
+  }
   return true;
 }
 
@@ -547,13 +765,38 @@ void CentralClient::maybeQueuePowerSample() {
   nextPowerSampleAt_ = now + intervalMs;
 
   PowerSampleRecord sample;
-  sample.sampledUptimeSeconds = status_->uptimeSeconds;
   sample.rssiDbm = static_cast<int16_t>(WiFi.RSSI());
-  sample.sourceFlags = 0x01;  // synthetic transport-validation sample
+  const bool hasFreshRealSample =
+      status_->power.realSample &&
+      status_->power.lastSampleMillis > 0 &&
+      (now - status_->power.lastSampleMillis) <= 5000UL &&
+      status_->power.lastSampleMillis != lastQueuedRealSampleMillis_;
+
+  if (hasFreshRealSample) {
+    sample.sampledUptimeSeconds = status_->power.lastSampleUptimeSeconds;
+    sample.sampledUnixMs = status_->power.lastSampleUnixMs;
+    sample.sourceFlags = status_->power.sourceFlags;
+    sample.voltageV = status_->power.voltageV;
+    sample.currentMa = status_->power.currentMa;
+    sample.estimatedCurrentMa = status_->power.estimatedCurrentMa;
+    sample.powerW = status_->power.powerW;
+    sample.apparentPowerVa = status_->power.apparentPowerVa;
+    sample.powerFactor = status_->power.powerFactor;
+    sample.frequencyHz = status_->power.frequencyHz;
+    sample.energyWh = status_->power.energyWh;
+    lastQueuedRealSampleMillis_ = status_->power.lastSampleMillis;
+  } else {
+    sample.sampledUptimeSeconds = status_->uptimeSeconds;
+    sample.sourceFlags = POWER_SAMPLE_FLAG_SYNTHETIC;
+  }
+
   powerSamples_.push_back(sample);
 
-  const size_t maxBuffered = static_cast<size_t>(
-      max<uint16_t>(10, min<uint16_t>(config_->power.batchSeconds * config_->power.sampleRateHz, 120)));
+  const bool compactUpload = shouldUseCompactPowerUpload();
+  const size_t maxBuffered = compactUpload
+      ? static_cast<size_t>(3)
+      : static_cast<size_t>(
+            max<uint16_t>(10, min<uint16_t>(config_->power.batchSeconds * config_->power.sampleRateHz, 120)));
   if (powerSamples_.size() > maxBuffered) {
     powerSamples_.erase(powerSamples_.begin(), powerSamples_.begin() + (powerSamples_.size() - maxBuffered));
   }
@@ -563,39 +806,71 @@ bool CentralClient::sendPowerSamples() {
   if (!config_ || powerSamples_.empty()) return false;
   if (config_->central.deviceId.isEmpty() || config_->central.deviceToken.isEmpty()) return false;
 
+  const bool compactUpload = shouldUseCompactPowerUpload();
   JsonDocument doc;
   doc["device_id"] = config_->central.deviceId;
   JsonArray samples = doc["samples"].to<JsonArray>();
-  for (const auto& sample : powerSamples_) {
+  const size_t startIndex = compactUpload && !powerSamples_.empty() ? (powerSamples_.size() - 1) : 0;
+  for (size_t idx = startIndex; idx < powerSamples_.size(); ++idx) {
+    const auto& sample = powerSamples_[idx];
     JsonObject row = samples.add<JsonObject>();
     row["sampled_uptime_seconds"] = sample.sampledUptimeSeconds;
-    row["source"] = "synthetic";
+    if (sample.sampledUnixMs > 0) {
+      row["sampled_unix_ms"] = sample.sampledUnixMs;
+    }
+    row["source"] = (sample.sourceFlags & POWER_SAMPLE_FLAG_REAL) ? "steady" : "synthetic";
     row["source_flags"] = sample.sourceFlags;
-    if (config_->power.includeWifiStats) {
+    if (!compactUpload && config_->power.includeWifiStats) {
       row["rssi_dbm"] = sample.rssiDbm;
     }
     row["chip_type"] = "CSE7766";
+    if (sample.sourceFlags & POWER_SAMPLE_FLAG_REAL) {
+      if (sample.sourceFlags & POWER_SAMPLE_FLAG_VOLTAGE_VALID) {
+        row["v_v"] = sample.voltageV;
+      }
+      row["i_ma"] = sample.currentMa;
+      if (!compactUpload && (sample.sourceFlags & POWER_SAMPLE_FLAG_CURRENT_ESTIMATED)) {
+        row["i_ma_est"] = sample.estimatedCurrentMa;
+      }
+      row["p_w"] = sample.powerW;
+      if (!compactUpload) {
+        row["s_va"] = sample.apparentPowerVa;
+        row["pf"] = sample.powerFactor;
+      }
+      if (!compactUpload &&
+          config_->power.includeFrequency &&
+          (sample.sourceFlags & POWER_SAMPLE_FLAG_FREQUENCY_VALID)) {
+        row["hz"] = sample.frequencyHz;
+      }
+      if (!compactUpload &&
+          (sample.sourceFlags & POWER_SAMPLE_FLAG_ENERGY_VALID)) {
+        row["energy_wh"] = sample.energyWh;
+      }
+    }
   }
 
   String body;
+  body.reserve(static_cast<unsigned int>(measureJson(doc) + 16));
   serializeJson(doc, body);
 
   String response;
   String selectedBaseUrl;
   int code = -1;
-  if (!postWithFallback("/device/power-samples", config_->central.deviceToken, body, response, code, selectedBaseUrl)) {
-    if (eventLog_) eventLog_->add("central", "Power-sample transport failed: " + summarizeResponse(response));
+  if (!postWithoutResponseWithFallback("/device/power-samples", config_->central.deviceToken, body,
+                                       response, code, selectedBaseUrl)) {
+    logThrottled(lastPowerFailureLogAtMs_, "central", "Power-sample transport failed; backing off",
+                 TRANSPORT_FAILURE_LOG_INTERVAL_MS);
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
   if (code < 200 || code >= 300) {
-    if (eventLog_) eventLog_->add("central", "Power-sample upload failed (" + String(code) + "): " + summarizeResponse(response));
+    logThrottled(lastPowerFailureLogAtMs_, "central", "Power-sample upload failed; backing off",
+                 TRANSPORT_FAILURE_LOG_INTERVAL_MS);
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
-  if (eventLog_) {
-    eventLog_->add("central", "Power-sample batch uploaded via " + selectedBaseUrl + " (" + String(powerSamples_.size()) + " samples)");
-  }
   powerSamples_.clear();
   return true;
 }
@@ -613,15 +888,16 @@ bool CentralClient::pollCommands() {
     const String detail = response.isEmpty() ? String("unknown transport error") : summarizeResponse(response);
     Serial.print("Central command poll transport failed: ");
     Serial.println(detail);
-    if (eventLog_) eventLog_->add("central", "Command poll transport failed: " + detail);
+    logThrottled(lastPollFailureLogAtMs_, "central", "Command poll transport failed; backing off",
+                 TRANSPORT_FAILURE_LOG_INTERVAL_MS);
     setState("poll_transport_failed");
-    scheduleRetry(false);
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
   if (code == 429) {
     setState("poll_rate_limited");
-    scheduleRetry(true);
+    scheduleTransportFailureCooldown(millis(), true);
     return false;
   }
 
@@ -629,15 +905,14 @@ bool CentralClient::pollCommands() {
     if (eventLog_) eventLog_->add("central", "Command poll unauthorized; clearing cached registration");
     clearCentralRegistration(config_, status_, cfgMgr_);
     setState("reauth_required");
-    scheduleRetry(false);
-    nextRegisterAttemptAt_ = millis() + retryBackoffMs_;
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
   if (code < 200 || code >= 300) {
     Serial.printf("Central command poll failed: %d\n", code);
     setState("poll_failed");
-    scheduleRetry(false);
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
@@ -662,12 +937,15 @@ bool CentralClient::pollCommands() {
     bool includeRelayState = false;
     bool relayState = false;
     bool shouldRestart = false;
-    const bool executed = executeCommand(cmd, resultStatus, resultMessage, includeRelayState, relayState, shouldRestart);
+    String restartReason = "";
+    const bool executed = executeCommand(cmd, resultStatus, resultMessage,
+                                         includeRelayState, relayState,
+                                         shouldRestart, restartReason);
     if (!postCommandResult(commandId, resultStatus, resultMessage, includeRelayState, relayState) && eventLog_) {
       eventLog_->add("central_command", "Failed to post command result for " + commandId + ": " + resultStatus);
     }
     if (executed && shouldRestart) {
-      if (cfgMgr_) cfgMgr_->markBootHealthy();
+      if (cfgMgr_) cfgMgr_->prepareForPlannedRestart(restartReason);
       delay(200);
       ESP.restart();
     }
@@ -713,12 +991,18 @@ bool CentralClient::postCommandResult(const String& commandId, const String& sta
   String selectedBaseUrl;
   int code = -1;
   if (!postWithFallback("/device/command-result", config_->central.deviceToken, body, response, code, selectedBaseUrl)) {
-    if (eventLog_) eventLog_->add("central_command", "Command result transport failed: " + summarizeResponse(response));
+    logThrottled(lastCommandResultFailureLogAtMs_, "central_command",
+                 "Command result transport failed; backing off",
+                 TRANSPORT_FAILURE_LOG_INTERVAL_MS);
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
   if (code < 200 || code >= 300) {
-    if (eventLog_) eventLog_->add("central_command", "Command result rejected (" + String(code) + "): " + summarizeResponse(response));
+    logThrottled(lastCommandResultFailureLogAtMs_, "central_command",
+                 "Command result rejected; backing off",
+                 TRANSPORT_FAILURE_LOG_INTERVAL_MS);
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
@@ -735,14 +1019,20 @@ bool CentralClient::checkFirmwareAssignment() {
   String selectedBaseUrl;
   int code = -1;
   if (!getWithFallback("/device/firmware", config_->central.deviceToken, response, code, selectedBaseUrl)) {
-    if (eventLog_) eventLog_->add("firmware", "Firmware assignment check transport failed: " + summarizeResponse(response));
+    logThrottled(lastFirmwareFailureLogAtMs_, "firmware",
+                 "Firmware assignment check transport failed; backing off",
+                 TRANSPORT_FAILURE_LOG_INTERVAL_MS);
     setState("firmware_check_transport_failed");
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
   if (code < 200 || code >= 300) {
-    if (eventLog_) eventLog_->add("firmware", "Firmware assignment check failed (" + String(code) + "): " + summarizeResponse(response));
+    logThrottled(lastFirmwareFailureLogAtMs_, "firmware",
+                 "Firmware assignment check failed; backing off",
+                 TRANSPORT_FAILURE_LOG_INTERVAL_MS);
     setState("firmware_check_failed");
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
@@ -777,7 +1067,7 @@ bool CentralClient::checkFirmwareAssignment() {
   client->setInsecure();
   client->setBufferSizes(512, 512);
   ESPhttpUpdate.rebootOnUpdate(true);
-  if (cfgMgr_) cfgMgr_->markBootHealthy();
+  if (cfgMgr_) cfgMgr_->prepareForPlannedRestart("assigned_firmware_update");
   t_httpUpdate_return ret = ESPhttpUpdate.update(*client, downloadUrl);
   if (ret == HTTP_UPDATE_FAILED) {
     const String message = ESPhttpUpdate.getLastErrorString();
@@ -792,14 +1082,15 @@ bool CentralClient::checkFirmwareAssignment() {
     return true;
   }
 
-  if (cfgMgr_) cfgMgr_->markBootHealthy();
+  if (cfgMgr_) cfgMgr_->prepareForPlannedRestart("assigned_firmware_update_complete");
   if (eventLog_) eventLog_->add("firmware", "Assigned firmware update applied: " + targetVersion);
   return true;
 }
 
 bool CentralClient::executeCommand(const JsonObject& cmd, String& resultStatus,
                                    String& resultMessage, bool& includeRelayState,
-                                   bool& relayState, bool& shouldRestart) {
+                                   bool& relayState, bool& shouldRestart,
+                                   String& restartReason) {
   if (!config_ || !cfgMgr_ || !relay_) {
     resultStatus = "failed";
     resultMessage = "Command execution unavailable";
@@ -811,6 +1102,7 @@ bool CentralClient::executeCommand(const JsonObject& cmd, String& resultStatus,
 
   includeRelayState = true;
   shouldRestart = false;
+  restartReason = "";
 
   if (type == "relay_on") {
     relay_->set(true);
@@ -857,15 +1149,20 @@ bool CentralClient::executeCommand(const JsonObject& cmd, String& resultStatus,
     resultStatus = "completed";
     resultMessage = "Device restart scheduled";
     shouldRestart = true;
+    restartReason = "central_command_device_restart";
     return true;
   }
 
   if (type == "factory_reset") {
     includeRelayState = false;
+    if (wifi_) {
+      wifi_->clearProvisionedCredentials();
+    }
     cfgMgr_->reset();
     resultStatus = "completed";
     resultMessage = "Factory reset scheduled";
     shouldRestart = true;
+    restartReason = "central_command_factory_reset";
     return true;
   }
 
@@ -1038,6 +1335,12 @@ void CentralClient::loop() {
 
   if (!config_->central.enabled) {
     setState("disabled");
+    nextPowerUploadAt_ = 0;
+    return;
+  }
+
+  if (!status_->bootHealthyMarked) {
+    setState("boot_warmup");
     return;
   }
 
@@ -1053,41 +1356,62 @@ void CentralClient::loop() {
 
   const uint32_t now = millis();
   maybeQueuePowerSample();
+  if (now < nextTransportSlotAt_) return;
 
   const bool hasDeviceToken = !config_->central.deviceId.isEmpty() && !config_->central.deviceToken.isEmpty();
   const bool hasEnrollmentToken = !config_->central.enrollmentToken.isEmpty();
 
   if (!hasDeviceToken) {
+    steadyStateScheduled_ = false;
     if (hasEnrollmentToken) {
       if (now >= nextRegisterAttemptAt_) {
         if (!registerDevice()) nextRegisterAttemptAt_ = now + retryBackoffMs_;
+        nextTransportSlotAt_ = millis() + CENTRAL_ACTION_SPACING_MS;
       }
     } else {
-      if (now >= nextAnnounceAttemptAt_) announceDevice();
+      if (now >= nextAnnounceAttemptAt_) {
+        announceDevice();
+        nextTransportSlotAt_ = millis() + CENTRAL_ACTION_SPACING_MS;
+      }
     }
+    return;
+  }
+
+  if (!steadyStateScheduled_) {
+    scheduleSteadyStateWork(now);
+    steadyStateScheduled_ = true;
+    setState("idle");
     return;
   }
 
   if (now >= nextHeartbeatAt_) {
     if (sendHeartbeat()) nextHeartbeatAt_ = now + (config_->central.heartbeatIntervalSeconds * 1000UL);
     else nextHeartbeatAt_ = now + retryBackoffMs_;
+    nextTransportSlotAt_ = millis() + CENTRAL_ACTION_SPACING_MS;
+    return;
   }
 
   if (now >= nextPollAt_) {
     if (pollCommands()) nextPollAt_ = now + (config_->central.pollIntervalSeconds * 1000UL);
     else nextPollAt_ = now + retryBackoffMs_;
+    nextTransportSlotAt_ = millis() + CENTRAL_ACTION_SPACING_MS;
+    return;
   }
 
   if (now >= nextFirmwareCheckAt_) {
-    checkFirmwareAssignment();
-    nextFirmwareCheckAt_ = now + FIRMWARE_CHECK_INTERVAL_MS;
+    if (checkFirmwareAssignment()) {
+      nextFirmwareCheckAt_ = now + FIRMWARE_CHECK_INTERVAL_MS;
+    }
+    nextTransportSlotAt_ = millis() + CENTRAL_ACTION_SPACING_MS;
+    return;
   }
 
   if (config_->power.enabled) {
-    if (nextPowerUploadAt_ == 0) nextPowerUploadAt_ = now + (config_->power.batchSeconds * 1000UL);
+    if (nextPowerUploadAt_ == 0) nextPowerUploadAt_ = now + powerUploadIntervalMs();
     if (now >= nextPowerUploadAt_) {
-      if (sendPowerSamples()) nextPowerUploadAt_ = now + (config_->power.batchSeconds * 1000UL);
-      else nextPowerUploadAt_ = now + 5000UL;
+      if (sendPowerSamples()) nextPowerUploadAt_ = now + powerUploadIntervalMs();
+      nextTransportSlotAt_ = millis() + CENTRAL_ACTION_SPACING_MS;
+      return;
     }
   } else {
     powerSamples_.clear();

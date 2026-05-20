@@ -15,6 +15,7 @@
 #include "ota_manager.h"
 #include "auth_manager.h"
 #include "status_payload.h"
+#include "wifi_manager.h"
 
 static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html>
@@ -979,6 +980,7 @@ static EventLog* sEventLog = nullptr;
 static MonitorEngine* sMonitor = nullptr;
 static OtaManager* sOta = nullptr;
 static AuthManager* sAuth = nullptr;
+static WifiManagerService* sWifi = nullptr;
 
 static bool parseBaseUrl(const String& baseUrl, String& host, uint16_t& port, String& rootPath) {
   String url = baseUrl;
@@ -1187,7 +1189,8 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
                              RelayController* relay, ConfigManager* cfgMgr,
                              EventLog* eventLog, MonitorEngine* monitor,
                              OtaManager* ota,
-                             AuthManager* auth) {
+                             AuthManager* auth,
+                             WifiManagerService* wifi) {
   config_ = config;
   status_ = status;
   sConfig = config;
@@ -1198,6 +1201,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   sMonitor = monitor;
   sOta = ota;
   sAuth = auth;
+  sWifi = wifi;
   server.collectHeaders("X-Rebooter-Auth");
 
   server.on("/api/status", HTTP_GET, []() {
@@ -1216,10 +1220,15 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
       doc["recovery_mode"] = sStatus->recoveryMode;
       doc["auto_recovery_triggered"] = sStatus->autoRecoveryTriggered;
       doc["last_known_good_restored"] = sStatus->lastKnownGoodRestored;
+      doc["previous_boot_different_firmware"] = sStatus->previousBootDifferentFirmware;
       doc["consecutive_unhealthy_boots"] = sStatus->consecutiveUnhealthyBoots;
       doc["setup_ap_name"] = sStatus->setupApName;
       doc["health_state"] = healthToString(sStatus->healthState);
       doc["uptime_seconds"] = sStatus->uptimeSeconds;
+      doc["reset_reason"] = sStatus->resetReason;
+      doc["last_planned_restart_reason"] = sStatus->lastPlannedRestartReason;
+      doc["time_synced"] = sStatus->timeSynced;
+      doc["wall_clock_unix_ms"] = sStatus->wallClockUnixMs;
       doc["free_heap"] = ESP.getFreeHeap();
       doc["incident_cycles"] = sStatus->currentIncidentCycles;
       doc["hour_cycles"] = sStatus->currentHourCycles;
@@ -1233,10 +1242,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
       doc["central_last_heartbeat_seconds"] = lastHeartbeatStamp;
       doc["central_last_heartbeat_uptime_seconds"] = lastHeartbeatStamp;
       doc["central_heartbeat_age_seconds"] = heartbeatAgeSeconds;
-      doc["power_analytics_enabled"] = sConfig->power.enabled;
-      doc["power_chip_type"] = "CSE7766";
-      doc["power_sample_rate_hz"] = sConfig->power.sampleRateHz;
-      doc["power_batch_seconds"] = sConfig->power.batchSeconds;
+      StatusPayload::fillPowerStatus(doc, *sConfig, sStatus);
       String out;
       serializeJson(doc, out);
       server.send(200, "application/json", out);
@@ -1283,7 +1289,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     if (!requireAuth()) return;
 
     JsonDocument doc;
-    StatusPayload::fillHeartbeatDocument(doc, *sConfig, sStatus, FIRMWARE_VERSION);
+    StatusPayload::fillHeartbeatDocument(doc, *sConfig, sStatus, FIRMWARE_VERSION, true);
     String out;
     serializeJson(doc, out);
     server.send(200, "application/json", out);
@@ -1408,7 +1414,8 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   server.on("/api/system/reboot", HTTP_POST, []() {
     if (!requireAuth()) return;
     sEventLog->add("system", "Reboot requested by API");
-    sCfgMgr->markBootHealthy();
+    sEventLog->flush();
+    sCfgMgr->prepareForPlannedRestart("api_reboot");
     server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
     delay(100);
     ESP.restart();
@@ -1417,7 +1424,8 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   server.on("/api/system/recovery-boot", HTTP_POST, []() {
     if (!requireAuth()) return;
     sEventLog->add("system", "Recovery boot requested by API");
-    sCfgMgr->markBootHealthy();
+    sEventLog->flush();
+    sCfgMgr->prepareForPlannedRestart("api_recovery_boot");
     sCfgMgr->requestRecoveryBoot();
     server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true,\"recovery_boot\":true}");
     delay(100);
@@ -1427,7 +1435,12 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   server.on("/api/system/factory-reset", HTTP_POST, []() {
     if (!requireAuth()) return;
     sEventLog->add("system", "Factory reset requested by API");
+    sEventLog->flush();
+    if (sWifi) {
+      sWifi->clearProvisionedCredentials();
+    }
     sCfgMgr->reset();
+    sCfgMgr->prepareForPlannedRestart("api_factory_reset");
     server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
     delay(100);
     ESP.restart();
@@ -1440,7 +1453,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
       server.send(500, "application/json", body);
       return;
     }
-    sCfgMgr->markBootHealthy();
+    sCfgMgr->prepareForPlannedRestart("api_ota_finalize");
     server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
     delay(250);
     ESP.restart();

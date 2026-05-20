@@ -7,7 +7,55 @@ static const char* LAST_KNOWN_GOOD_PATH = "/config.lkg.json";
 static const char* TEMP_CONFIG_PATH = "/config.tmp";
 static const char* RECOVERY_BOOT_FLAG_PATH = "/recovery.flag";
 static const char* BOOT_STATE_PATH = "/bootstate.json";
+static const char* EVENT_LOG_PATH = "/events.json";
 static constexpr uint8_t AUTO_RECOVERY_BOOT_THRESHOLD = 2;
+
+struct StoredBootState {
+  uint8_t consecutiveUnhealthyBoots = 0;
+  bool bootInProgress = false;
+  bool plannedRestart = false;
+  String lastFirmwareVersion = "";
+  String plannedRestartReason = "";
+};
+
+static StoredBootState loadBootStateRecord() {
+  StoredBootState state;
+  File file = LittleFS.open(BOOT_STATE_PATH, "r");
+  if (!file) return state;
+
+  if (file.size() == 0 || file.size() > 256) {
+    file.close();
+    LittleFS.remove(BOOT_STATE_PATH);
+    return state;
+  }
+
+  JsonDocument doc;
+    if (deserializeJson(doc, file) == DeserializationError::Ok) {
+      state.consecutiveUnhealthyBoots = doc["consecutive_unhealthy_boots"] | 0;
+      state.bootInProgress = doc["boot_in_progress"] | false;
+      state.plannedRestart = doc["planned_restart"] | false;
+      state.lastFirmwareVersion = doc["last_firmware_version"] | "";
+      state.plannedRestartReason = doc["planned_restart_reason"] | "";
+    }
+
+  file.close();
+  return state;
+}
+
+static bool saveBootStateRecord(const StoredBootState& state) {
+  JsonDocument doc;
+  doc["consecutive_unhealthy_boots"] = state.consecutiveUnhealthyBoots;
+  doc["boot_in_progress"] = state.bootInProgress;
+  doc["planned_restart"] = state.plannedRestart;
+  doc["last_firmware_version"] = state.lastFirmwareVersion;
+  doc["planned_restart_reason"] = state.plannedRestartReason;
+
+  File file = LittleFS.open(BOOT_STATE_PATH, "w");
+  if (!file) return false;
+  serializeJson(doc, file);
+  file.close();
+  return true;
+}
 
 static uint32_t clampU32(uint32_t value, uint32_t minValue, uint32_t maxValue) {
   if (value < minValue) return minValue;
@@ -376,7 +424,9 @@ bool ConfigManager::reset() {
   if (LittleFS.exists(configPath_)) LittleFS.remove(configPath_);
   if (LittleFS.exists(LAST_KNOWN_GOOD_PATH)) LittleFS.remove(LAST_KNOWN_GOOD_PATH);
   if (LittleFS.exists(TEMP_CONFIG_PATH)) LittleFS.remove(TEMP_CONFIG_PATH);
+  if (LittleFS.exists(RECOVERY_BOOT_FLAG_PATH)) LittleFS.remove(RECOVERY_BOOT_FLAG_PATH);
   if (LittleFS.exists(BOOT_STATE_PATH)) LittleFS.remove(BOOT_STATE_PATH);
+  if (LittleFS.exists(EVENT_LOG_PATH)) LittleFS.remove(EVENT_LOG_PATH);
   return true;
 }
 
@@ -400,51 +450,22 @@ bool ConfigManager::restoreLastKnownGood(AppConfig& out) {
   return true;
 }
 
-BootHealthSnapshot ConfigManager::beginBootSession() {
-  struct StoredBootState {
-    uint8_t consecutiveUnhealthyBoots = 0;
-    bool bootInProgress = false;
-  };
-
-  auto loadBootState = []() {
-    StoredBootState state;
-    File file = LittleFS.open(BOOT_STATE_PATH, "r");
-    if (!file) return state;
-
-    if (file.size() == 0 || file.size() > 256) {
-      file.close();
-      LittleFS.remove(BOOT_STATE_PATH);
-      return state;
-    }
-
-    JsonDocument doc;
-    if (deserializeJson(doc, file) == DeserializationError::Ok) {
-      state.consecutiveUnhealthyBoots = doc["consecutive_unhealthy_boots"] | 0;
-      state.bootInProgress = doc["boot_in_progress"] | false;
-    }
-
-    file.close();
-    return state;
-  };
-
-  auto saveBootState = [](const StoredBootState& state) {
-    JsonDocument doc;
-    doc["consecutive_unhealthy_boots"] = state.consecutiveUnhealthyBoots;
-    doc["boot_in_progress"] = state.bootInProgress;
-
-    File file = LittleFS.open(BOOT_STATE_PATH, "w");
-    if (!file) return false;
-    serializeJson(doc, file);
-    file.close();
-    return true;
-  };
-
-  StoredBootState state = loadBootState();
+BootHealthSnapshot ConfigManager::beginBootSession(const String& currentFirmwareVersion) {
+  StoredBootState state = loadBootStateRecord();
   BootHealthSnapshot snapshot;
 
   if (state.bootInProgress) {
     snapshot.previousBootIncomplete = true;
-    if (state.consecutiveUnhealthyBoots < UINT8_MAX) {
+    if (state.plannedRestart) {
+      snapshot.previousBootPlannedRestart = true;
+      snapshot.previousPlannedRestartReason = state.plannedRestartReason;
+      state.consecutiveUnhealthyBoots = 0;
+    } else if (!state.lastFirmwareVersion.isEmpty() &&
+        !currentFirmwareVersion.isEmpty() &&
+        state.lastFirmwareVersion != currentFirmwareVersion) {
+      snapshot.previousBootDifferentFirmware = true;
+      state.consecutiveUnhealthyBoots = 0;
+    } else if (state.consecutiveUnhealthyBoots < UINT8_MAX) {
       state.consecutiveUnhealthyBoots++;
     }
   } else {
@@ -452,26 +473,36 @@ BootHealthSnapshot ConfigManager::beginBootSession() {
   }
 
   snapshot.consecutiveUnhealthyBoots = state.consecutiveUnhealthyBoots;
-  if (state.consecutiveUnhealthyBoots >= AUTO_RECOVERY_BOOT_THRESHOLD) {
+  if (!snapshot.previousBootDifferentFirmware &&
+      state.consecutiveUnhealthyBoots >= AUTO_RECOVERY_BOOT_THRESHOLD) {
     snapshot.autoRecoveryTriggered = true;
     state.consecutiveUnhealthyBoots = 0;
   }
 
   state.bootInProgress = true;
-  saveBootState(state);
+  state.plannedRestart = false;
+  state.lastFirmwareVersion = currentFirmwareVersion;
+  state.plannedRestartReason = "";
+  saveBootStateRecord(state);
   return snapshot;
 }
 
 bool ConfigManager::markBootHealthy() {
-  JsonDocument doc;
-  doc["consecutive_unhealthy_boots"] = 0;
-  doc["boot_in_progress"] = false;
+  StoredBootState state = loadBootStateRecord();
+  state.consecutiveUnhealthyBoots = 0;
+  state.bootInProgress = false;
+  state.plannedRestart = false;
+  state.plannedRestartReason = "";
+  return saveBootStateRecord(state);
+}
 
-  File file = LittleFS.open(BOOT_STATE_PATH, "w");
-  if (!file) return false;
-  serializeJson(doc, file);
-  file.close();
-  return true;
+bool ConfigManager::prepareForPlannedRestart(const String& reason) {
+  StoredBootState state = loadBootStateRecord();
+  state.consecutiveUnhealthyBoots = 0;
+  state.bootInProgress = false;
+  state.plannedRestart = true;
+  state.plannedRestartReason = reason;
+  return saveBootStateRecord(state);
 }
 
 bool ConfigManager::requestRecoveryBoot() {

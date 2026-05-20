@@ -81,9 +81,56 @@ void fillReportedConfig(JsonObject target, const AppConfig& config) {
   target["power"]["include_frequency"] = config.power.includeFrequency;
 }
 
+void fillPowerStatus(JsonDocument& doc, const AppConfig& config,
+                     const RuntimeStatus* status) {
+  doc["power_analytics_enabled"] = config.power.enabled;
+  doc["power_chip_type"] = "CSE7766";
+  doc["power_sample_rate_hz"] = config.power.sampleRateHz;
+  doc["power_batch_seconds"] = config.power.batchSeconds;
+
+  if (!status) return;
+
+  const PowerLiveStatus& power = status->power;
+  const uint32_t sampleAgeSeconds =
+      (power.lastSampleUptimeSeconds > 0 && status->uptimeSeconds >= power.lastSampleUptimeSeconds)
+          ? (status->uptimeSeconds - power.lastSampleUptimeSeconds)
+          : 0;
+
+  doc["power_chip_seen"] = power.chipSeen;
+  doc["power_source"] = power.realSample ? "steady" : "none";
+  doc["power_source_flags"] = power.sourceFlags;
+  doc["power_last_sample_uptime_seconds"] = power.lastSampleUptimeSeconds;
+  doc["power_last_sample_age_seconds"] = sampleAgeSeconds;
+  doc["power_last_sample_unix_ms"] = power.lastSampleUnixMs;
+  doc["power_valid_frame_count"] = power.validFrameCount;
+  doc["power_invalid_frame_count"] = power.invalidFrameCount;
+
+  if (!power.realSample) return;
+
+  if (power.voltageValid) {
+    doc["power_voltage_v"] = power.voltageV;
+  }
+  doc["power_current_ma"] = power.currentMa;
+  doc["power_current_estimated"] = power.currentEstimated;
+  if (power.currentEstimated) {
+    doc["power_estimated_current_ma"] = power.estimatedCurrentMa;
+  }
+  doc["power_power_w"] = power.powerW;
+  doc["power_apparent_power_va"] = power.apparentPowerVa;
+  doc["power_power_factor"] = power.powerFactor;
+  if (power.frequencyValid) {
+    doc["power_frequency_hz"] = power.frequencyHz;
+  }
+  if (power.energyValid) {
+    doc["power_energy_wh"] = power.energyWh;
+  }
+}
+
 void fillHeartbeatDocument(JsonDocument& doc, const AppConfig& config,
                            const RuntimeStatus* status,
-                           const String& firmwareVersion) {
+                           const String& firmwareVersion,
+                           bool includeReportedConfig,
+                           bool compactMode) {
   const uint32_t lastHeartbeatStamp = status ? status->centralLastHeartbeatSeconds : 0;
   const uint32_t uptimeSeconds = status ? status->uptimeSeconds : 0;
   const uint32_t heartbeatAgeSeconds =
@@ -97,32 +144,38 @@ void fillHeartbeatDocument(JsonDocument& doc, const AppConfig& config,
   doc["mode"] = modeToString(config.currentMode);
   doc["relay_on"] = status ? status->relayOn : true;
   doc["wifi_connected"] = status ? status->wifiConnected : true;
-  doc["in_captive_portal"] = status ? status->inCaptivePortal : false;
   doc["recovery_mode"] = status ? status->recoveryMode : false;
   doc["auto_recovery_triggered"] = status ? status->autoRecoveryTriggered : false;
   doc["last_known_good_restored"] = status ? status->lastKnownGoodRestored : false;
   doc["consecutive_unhealthy_boots"] = status ? status->consecutiveUnhealthyBoots : 0;
   doc["health_state"] = healthToString(status ? status->healthState : HealthState::Unknown);
   doc["uptime_seconds"] = uptimeSeconds;
-  doc["incident_cycles"] = status ? status->currentIncidentCycles : 0;
-  doc["hour_cycles"] = status ? status->currentHourCycles : 0;
-  doc["holdoff_remaining_seconds"] = status ? status->holdoffRemainingSeconds : 0;
-  doc["cooldown_remaining_seconds"] = status ? status->cooldownRemainingSeconds : 0;
-  doc["last_event_type"] = status ? status->lastEvent : "boot";
-  doc["last_event_at"] = "";
+  doc["reset_reason"] = status ? status->resetReason : "";
   doc["central_enabled"] = status ? status->centralEnabled : config.central.enabled;
   doc["central_registered"] = status ? status->centralRegistered : (!config.central.deviceId.isEmpty() && !config.central.deviceToken.isEmpty());
   doc["central_state"] = status ? status->centralState : (config.central.enabled ? "idle" : "disabled");
   doc["central_device_id"] = status ? status->centralDeviceId : config.central.deviceId;
   doc["central_last_heartbeat_uptime_seconds"] = lastHeartbeatStamp;
   doc["central_heartbeat_age_seconds"] = heartbeatAgeSeconds;
-  doc["power_analytics_enabled"] = config.power.enabled;
-  doc["power_chip_type"] = "CSE7766";
-  doc["power_sample_rate_hz"] = config.power.sampleRateHz;
-  doc["power_batch_seconds"] = config.power.batchSeconds;
+  if (!compactMode) {
+    doc["in_captive_portal"] = status ? status->inCaptivePortal : false;
+    doc["previous_boot_different_firmware"] = status ? status->previousBootDifferentFirmware : false;
+    doc["last_planned_restart_reason"] = status ? status->lastPlannedRestartReason : "";
+    doc["time_synced"] = status ? status->timeSynced : false;
+    doc["wall_clock_unix_ms"] = status ? status->wallClockUnixMs : 0;
+    doc["incident_cycles"] = status ? status->currentIncidentCycles : 0;
+    doc["hour_cycles"] = status ? status->currentHourCycles : 0;
+    doc["holdoff_remaining_seconds"] = status ? status->holdoffRemainingSeconds : 0;
+    doc["cooldown_remaining_seconds"] = status ? status->cooldownRemainingSeconds : 0;
+    doc["last_event_type"] = status ? status->lastEvent : "boot";
+    doc["last_event_at"] = "";
+    fillPowerStatus(doc, config, status);
+  }
 
-  JsonObject reportedConfig = doc["reported_config"].to<JsonObject>();
-  fillReportedConfig(reportedConfig, config);
+  if (includeReportedConfig && !compactMode) {
+    JsonObject reportedConfig = doc["reported_config"].to<JsonObject>();
+    fillReportedConfig(reportedConfig, config);
+  }
 }
 
 }

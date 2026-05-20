@@ -17,6 +17,7 @@ Last updated: 2026-05-14
 1. Recovery should preserve operational state whenever safely possible.
 2. Recovery should favor returning the device to a reachable LAN state.
 3. Recovery behavior should be visible in both local status and event log.
+4. Intentional restarts must not be treated like crash boots on the next boot.
 
 ## Event log design rules
 
@@ -29,6 +30,22 @@ Current approach:
 - `boot_id`
 - `ts`
 - `ts_basis = uptime_seconds`
+
+## Power telemetry design rules
+
+1. Keep measured current and estimated current semantically distinct.
+2. Low-load standby behavior may legitimately produce nonzero watts with
+   estimated-only current.
+3. Telemetry should preserve enough signal for analytics to decide whether to
+   trust a field rather than forcing the firmware to over-normalize it.
+
+## Time-sync design rules
+
+1. G2 timing work needs real wall-clock timestamps, not only uptime seconds.
+2. Wall-clock instrumentation should be additive and safe to omit when NTP is
+   unavailable.
+3. Power uploads should continue to include uptime-relative timing even after
+   wall-clock fields are added.
 
 ## Central defaults
 
