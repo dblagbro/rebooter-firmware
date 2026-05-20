@@ -36,11 +36,13 @@ void clearCentralRegistration(AppConfig* config, RuntimeStatus* status, ConfigMa
 }
 }
 
-void CentralClient::begin(AppConfig* config, RuntimeStatus* status, ConfigManager* cfgMgr, EventLog* eventLog) {
+void CentralClient::begin(AppConfig* config, RuntimeStatus* status, ConfigManager* cfgMgr, EventLog* eventLog,
+                          RelayController* relay) {
   config_ = config;
   status_ = status;
   cfgMgr_ = cfgMgr;
   eventLog_ = eventLog;
+  relay_ = relay;
   retryBackoffMs_ = INITIAL_RETRY_DELAY_MS;
   if (status_) {
     status_->centralEnabled = config_ && config_->central.enabled;
@@ -93,9 +95,14 @@ bool CentralClient::postWithFallback(const String& path, const String& authToken
     const String baseUrl = config_->central.baseUrls[i];
     std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
     client->setInsecure();
+    client->setBufferSizes(1024, 1024);
     HTTPClient http;
+    http.setTimeout(15000);
     const String url = buildApiUrl(baseUrl, path);
+    Serial.printf("Central POST attempt: %s (heap=%u)\n", url.c_str(), ESP.getFreeHeap());
     if (!http.begin(*client, url)) {
+      Serial.printf("Central POST http.begin FAILED for %s\n", url.c_str());
+      if (eventLog_) eventLog_->add("central_transport", "http.begin failed: " + url);
       continue;
     }
 
@@ -110,6 +117,9 @@ bool CentralClient::postWithFallback(const String& path, const String& authToken
       selectedBaseUrl = baseUrl;
       return true;
     }
+
+    Serial.printf("Central POST %s failed: HTTP %d\n", url.c_str(), httpCode);
+    if (eventLog_) eventLog_->add("central_transport", "POST " + url + " failed: HTTP " + String(httpCode));
 
     if (httpCode >= 500) {
       continue;
@@ -133,9 +143,14 @@ bool CentralClient::getWithFallback(const String& path, const String& authToken,
     const String baseUrl = config_->central.baseUrls[i];
     std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
     client->setInsecure();
+    client->setBufferSizes(1024, 1024);
     HTTPClient http;
+    http.setTimeout(15000);
     const String url = buildApiUrl(baseUrl, path);
+    Serial.printf("Central GET attempt: %s (heap=%u)\n", url.c_str(), ESP.getFreeHeap());
     if (!http.begin(*client, url)) {
+      Serial.printf("Central GET http.begin FAILED for %s\n", url.c_str());
+      if (eventLog_) eventLog_->add("central_transport", "http.begin failed: " + url);
       continue;
     }
 
@@ -148,6 +163,9 @@ bool CentralClient::getWithFallback(const String& path, const String& authToken,
       selectedBaseUrl = baseUrl;
       return true;
     }
+
+    Serial.printf("Central GET %s failed: HTTP %d\n", url.c_str(), httpCode);
+    if (eventLog_) eventLog_->add("central_transport", "GET " + url + " failed: HTTP " + String(httpCode));
 
     if (httpCode >= 500) {
       continue;
@@ -314,6 +332,261 @@ bool CentralClient::sendHeartbeat() {
   return true;
 }
 
+bool CentralClient::postCommandResult(const String& commandId, const String& status,
+                                      const String& message, JsonObject result) {
+  if (!config_ || config_->central.deviceToken.isEmpty()) return false;
+
+  JsonDocument doc;
+  doc["device_id"] = config_->central.deviceId;
+  doc["command_id"] = commandId;
+  doc["status"] = status;
+  doc["message"] = message;
+  if (!result.isNull()) {
+    doc["result"] = result;
+  }
+
+  String body;
+  serializeJson(doc, body);
+  String response;
+  String selectedBaseUrl;
+  int code = -1;
+  if (!postWithFallback("/device/command-result", config_->central.deviceToken, body, response, code, selectedBaseUrl)) {
+    Serial.println("Command result post transport failed");
+    return false;
+  }
+  if (code >= 200 && code < 300) {
+    Serial.printf("Command result posted for %s: %s\n", commandId.c_str(), status.c_str());
+    return true;
+  }
+  Serial.printf("Command result post failed: %d\n", code);
+  return false;
+}
+
+void CentralClient::executeCommand(const String& commandId, const String& type, JsonObject payload) {
+  Serial.printf("Executing command %s: %s\n", commandId.c_str(), type.c_str());
+
+  JsonDocument resultDoc;
+  JsonObject result = resultDoc.to<JsonObject>();
+
+  if (type == "relay_on") {
+    if (relay_) {
+      relay_->set(true);
+      if (config_) { config_->lastRelayOn = true; if (cfgMgr_) cfgMgr_->save(*config_); }
+      result["relay_on"] = true;
+      if (eventLog_) eventLog_->add("relay", "Relay turned on by hub command");
+      postCommandResult(commandId, "completed", "Relay on", result);
+    } else {
+      postCommandResult(commandId, "failed", "Relay controller not available", result);
+    }
+
+  } else if (type == "relay_off") {
+    if (relay_) {
+      relay_->set(false);
+      if (config_) { config_->lastRelayOn = false; if (cfgMgr_) cfgMgr_->save(*config_); }
+      result["relay_on"] = false;
+      if (eventLog_) eventLog_->add("relay", "Relay turned off by hub command");
+      postCommandResult(commandId, "completed", "Relay off", result);
+    } else {
+      postCommandResult(commandId, "failed", "Relay controller not available", result);
+    }
+
+  } else if (type == "relay_cycle") {
+    if (relay_) {
+      uint32_t offSeconds = payload["power_off_seconds"] | 5;
+      relay_->set(false);
+      if (eventLog_) eventLog_->add("relay", "Relay cycle: off for " + String(offSeconds) + "s (hub command)");
+      postCommandResult(commandId, "running", "Relay off, waiting " + String(offSeconds) + "s", result);
+      delay(offSeconds * 1000);
+      relay_->set(true);
+      if (config_) { config_->lastRelayOn = true; if (cfgMgr_) cfgMgr_->save(*config_); }
+      result["relay_on"] = true;
+      if (eventLog_) eventLog_->add("relay", "Relay cycle complete: back on");
+      postCommandResult(commandId, "completed", "Relay cycle completed", result);
+    } else {
+      postCommandResult(commandId, "failed", "Relay controller not available", result);
+    }
+
+  } else if (type == "set_mode") {
+    const String mode = payload["mode"] | "";
+    if (config_ && cfgMgr_) {
+      if (mode == "smart_plug") config_->currentMode = DeviceMode::SmartPlug;
+      else if (mode == "internet_watchdog") config_->currentMode = DeviceMode::InternetWatchdog;
+      else if (mode == "device_watchdog") config_->currentMode = DeviceMode::DeviceWatchdog;
+      else {
+        postCommandResult(commandId, "failed", "Unknown mode: " + mode, result);
+        return;
+      }
+      cfgMgr_->save(*config_);
+      result["mode"] = mode;
+      if (eventLog_) eventLog_->add("config", "Mode set to " + mode + " by hub command");
+      postCommandResult(commandId, "completed", "Mode set to " + mode, result);
+    } else {
+      postCommandResult(commandId, "failed", "Config not available", result);
+    }
+
+  } else if (type == "reboot") {
+    if (eventLog_) eventLog_->add("system", "Reboot requested by hub command");
+    postCommandResult(commandId, "completed", "Rebooting", result);
+    delay(500);
+    ESP.restart();
+
+  } else if (type == "lan_scan") {
+    int rangeStart = payload["start"] | 1;
+    int rangeEnd = payload["end"] | 254;
+    if (rangeStart < 1) rangeStart = 1;
+    if (rangeEnd > 254) rangeEnd = 254;
+    if (rangeEnd - rangeStart > 50) rangeEnd = rangeStart + 50;
+
+    postCommandResult(commandId, "running", "Scanning " + String(rangeStart) + "-" + String(rangeEnd), result);
+
+    IPAddress localIp = WiFi.localIP();
+    JsonDocument scanDoc;
+    JsonArray devices = scanDoc["devices"].to<JsonArray>();
+    scanDoc["scanner_ip"] = localIp.toString();
+
+    for (int i = rangeStart; i <= rangeEnd; i++) {
+      IPAddress target(localIp[0], localIp[1], localIp[2], i);
+      if (target == localIp) continue;
+      ESP.wdtFeed();
+      yield();
+
+      WiFiClient probe;
+      probe.setTimeout(1000);
+      if (probe.connect(target, 80)) {
+        probe.setTimeout(2000);
+        probe.print("GET /api/status HTTP/1.0\r\nHost: ");
+        probe.print(target.toString());
+        probe.print("\r\nConnection: close\r\n\r\n");
+
+        String body = "";
+        uint32_t start = millis();
+        bool inBody = false;
+        String hdrBuf = "";
+        while (probe.connected() && millis() - start < 3000) {
+          while (probe.available()) {
+            char c = probe.read();
+            if (inBody) { body += c; }
+            else { hdrBuf += c; if (hdrBuf.endsWith("\r\n\r\n")) { inBody = true; } }
+          }
+          if (body.length() > 600) break;
+          yield();
+        }
+        probe.stop();
+
+        JsonObject dev = devices.add<JsonObject>();
+        dev["ip"] = target.toString();
+        JsonDocument peer;
+        if (body.length() > 2 && deserializeJson(peer, body) == DeserializationError::Ok && peer.containsKey("device_name")) {
+          dev["is_rebooter"] = true;
+          dev["device_name"] = peer["device_name"] | "?";
+          dev["firmware_version"] = peer["firmware_version"] | "?";
+          dev["mode"] = peer["mode"] | "?";
+          dev["relay_on"] = peer["relay_on"] | false;
+          dev["central_state"] = peer["central_state"] | "?";
+        } else {
+          dev["is_rebooter"] = false;
+        }
+      }
+    }
+
+    scanDoc["count"] = devices.size();
+    // Build result from scan
+    JsonDocument finalResult;
+    JsonObject finalObj = finalResult.to<JsonObject>();
+    finalObj["scan"] = scanDoc;
+    if (eventLog_) eventLog_->add("lan", "Hub-commanded LAN scan found " + String(devices.size()) + " device(s)");
+    postCommandResult(commandId, "completed", "Found " + String(devices.size()) + " device(s)", finalObj);
+
+  } else if (type == "lan_proxy") {
+    const String targetIp = payload["ip"] | "";
+    const String path = payload["path"] | "/api/status";
+    const String method = payload["method"] | "GET";
+    const String proxyBody = payload["body"] | "";
+
+    if (targetIp.isEmpty()) {
+      postCommandResult(commandId, "failed", "ip required", result);
+      return;
+    }
+
+    postCommandResult(commandId, "running", "Proxying " + method + " to " + targetIp + path, result);
+
+    WiFiClient client;
+    HTTPClient http;
+    http.setTimeout(10000);
+    String url = "http://" + targetIp + path;
+
+    if (!http.begin(client, url)) {
+      result["error"] = "connection failed";
+      postCommandResult(commandId, "failed", "Cannot connect to " + targetIp, result);
+      return;
+    }
+
+    if (!proxyBody.isEmpty()) http.addHeader("Content-Type", "application/json");
+
+    int httpCode = (method == "POST") ? http.POST(proxyBody) : http.GET();
+    String response = http.getString();
+    http.end();
+
+    result["target_ip"] = targetIp;
+    result["path"] = path;
+    result["http_code"] = httpCode;
+    // Try to include parsed response
+    JsonDocument respDoc;
+    if (response.length() < 1024 && deserializeJson(respDoc, response) == DeserializationError::Ok) {
+      result["response"] = respDoc;
+    } else {
+      result["response_text"] = response.substring(0, 256);
+    }
+    if (eventLog_) eventLog_->add("lan", "Hub proxy " + method + " " + url + " -> " + String(httpCode));
+    postCommandResult(commandId, "completed", "Proxy " + method + " " + targetIp + path + " -> " + String(httpCode), result);
+
+  } else if (type == "lan_ota_push") {
+    const String targetIp = payload["ip"] | "";
+    const String firmwareUrl = payload["url"] | "";
+
+    if (targetIp.isEmpty() || firmwareUrl.isEmpty()) {
+      postCommandResult(commandId, "failed", "ip and url required", result);
+      return;
+    }
+
+    postCommandResult(commandId, "running", "Pushing OTA pull to " + targetIp, result);
+
+    // Tell the peer device to pull firmware from the URL
+    WiFiClient client;
+    HTTPClient http;
+    http.setTimeout(15000);
+    String url = "http://" + targetIp + "/api/system/ota-pull";
+
+    if (!http.begin(client, url)) {
+      result["error"] = "connection failed";
+      postCommandResult(commandId, "failed", "Cannot connect to " + targetIp, result);
+      return;
+    }
+
+    http.addHeader("Content-Type", "application/json");
+    String body = "{\"url\":\"" + firmwareUrl + "\"}";
+    int httpCode = http.POST(body);
+    String response = http.getString();
+    http.end();
+
+    result["target_ip"] = targetIp;
+    result["firmware_url"] = firmwareUrl;
+    result["http_code"] = httpCode;
+    if (httpCode >= 200 && httpCode < 300) {
+      if (eventLog_) eventLog_->add("lan", "OTA pull command sent to " + targetIp + " -> " + String(httpCode));
+      postCommandResult(commandId, "completed", "OTA pull sent to " + targetIp, result);
+    } else {
+      if (eventLog_) eventLog_->add("lan", "OTA pull to " + targetIp + " failed: " + String(httpCode));
+      postCommandResult(commandId, "failed", "OTA pull failed: HTTP " + String(httpCode), result);
+    }
+
+  } else {
+    Serial.printf("Unknown command type: %s\n", type.c_str());
+    if (eventLog_) eventLog_->add("central_command", "Unknown command type: " + type);
+    postCommandResult(commandId, "failed", "Unknown command type: " + type, result);
+  }
+}
+
 bool CentralClient::pollCommands() {
   if (!config_ || config_->central.deviceId.isEmpty() || config_->central.deviceToken.isEmpty()) return false;
 
@@ -361,10 +634,16 @@ bool CentralClient::pollCommands() {
   size_t count = 0;
   for (JsonObject cmd : commands) {
     count++;
+    const String commandId = cmd["command_id"] | "";
     const String type = cmd["type"] | "unknown";
+    JsonObject payload = cmd["payload"].as<JsonObject>();
     Serial.print("Central command received: ");
-    Serial.println(type);
-    if (eventLog_) eventLog_->add("central_command", "Received command: " + type);
+    Serial.print(type);
+    Serial.print(" (");
+    Serial.print(commandId);
+    Serial.println(")");
+    if (eventLog_) eventLog_->add("central_command", "Received command: " + type + " (" + commandId + ")");
+    executeCommand(commandId, type, payload);
   }
 
   if (count == 0) {

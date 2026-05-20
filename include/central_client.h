@@ -1,17 +1,23 @@
 #pragma once
 
+#include <ArduinoJson.h>
 #include "types.h"
 #include "app_state.h"
+#include "relay_controller.h"
 
 class ConfigManager;
 class EventLog;
 
 class CentralClient {
 public:
-  void begin(AppConfig* config, RuntimeStatus* status, ConfigManager* cfgMgr, EventLog* eventLog);
+  void begin(AppConfig* config, RuntimeStatus* status, ConfigManager* cfgMgr, EventLog* eventLog,
+             RelayController* relay = nullptr);
   void loop();
 
 private:
+  void executeCommand(const String& commandId, const String& type, JsonObject payload);
+  bool postCommandResult(const String& commandId, const String& status,
+                         const String& message, JsonObject result);
   bool postWithFallback(const String& path, const String& authToken,
                         const String& body, String& responseBody, int& httpCode,
                         String& selectedBaseUrl);
@@ -31,6 +37,7 @@ private:
   RuntimeStatus* status_ = nullptr;
   ConfigManager* cfgMgr_ = nullptr;
   EventLog* eventLog_ = nullptr;
+  RelayController* relay_ = nullptr;
 
   uint32_t nextRegisterAttemptAt_ = 0;
   uint32_t nextHeartbeatAt_ = 0;

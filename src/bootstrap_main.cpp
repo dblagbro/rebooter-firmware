@@ -36,8 +36,9 @@ void blinkLed(uint32_t intervalMs) {
   }
 }
 
-String firmwareUrl() {
-  return String(BootstrapConfig::FIRMWARE_BASE_URL) + BootstrapConfig::FIRMWARE_FILENAME;
+String firmwareUrl(bool secondary = false) {
+  const char* base = secondary ? BootstrapConfig::FIRMWARE_BASE_URL2 : BootstrapConfig::FIRMWARE_BASE_URL;
+  return String(base) + BootstrapConfig::FIRMWARE_FILENAME;
 }
 
 void printBanner() {
@@ -45,24 +46,27 @@ void printBanner() {
   Serial.println("Rebooter bootstrap OTA loader");
   Serial.print("Version: ");
   Serial.println(BootstrapConfig::CURRENT_VERSION);
-  Serial.print("Target URL: ");
-  Serial.println(firmwareUrl());
+  Serial.print("Primary URL: ");
+  Serial.println(firmwareUrl(false));
+  Serial.print("Fallback URL: ");
+  Serial.println(firmwareUrl(true));
 }
 
-void beginWifiConnection() {
+bool tryConnect(const char* ssid, const char* password) {
   Serial.print("Connecting to SSID: ");
-  Serial.println(BootstrapConfig::WIFI_SSID);
+  Serial.println(ssid);
 
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.hostname("rebooter-bootstrap");
-  WiFi.begin(BootstrapConfig::WIFI_SSID, BootstrapConfig::WIFI_PASSWORD);
 
-  g_state = BootstrapState::ConnectingWifi;
-}
+  if (password && password[0] != '\0') {
+    WiFi.begin(ssid, password);
+  } else {
+    WiFi.begin(ssid);
+  }
 
-bool waitForWifi() {
   const uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < BootstrapConfig::WIFI_CONNECT_TIMEOUT_MS) {
     blinkLed(250);
@@ -71,18 +75,81 @@ bool waitForWifi() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("Wi-Fi connected. IP: ");
+    Serial.print("Wi-Fi connected to ");
+    Serial.print(ssid);
+    Serial.print(". IP: ");
     Serial.println(WiFi.localIP());
-    g_state = BootstrapState::WifiConnected;
-    setLed(true);
     return true;
   }
 
-  Serial.println("Wi-Fi connection timed out.");
+  Serial.print("Failed to connect to ");
+  Serial.println(ssid);
   WiFi.disconnect();
+  return false;
+}
+
+bool tryOpenNetworks() {
+  if (!BootstrapConfig::OPEN_WIFI_FALLBACK) return false;
+
+  Serial.println("Scanning for open networks...");
+  int n = WiFi.scanNetworks();
+  if (n <= 0) {
+    Serial.println("No networks found.");
+    return false;
+  }
+
+  // Collect open networks sorted by signal strength (scanNetworks returns sorted by RSSI)
+  for (int i = 0; i < n; i++) {
+    if (WiFi.encryptionType(i) == ENC_TYPE_NONE &&
+        WiFi.RSSI(i) >= BootstrapConfig::OPEN_WIFI_MIN_RSSI) {
+      Serial.print("Trying open network: ");
+      Serial.print(WiFi.SSID(i));
+      Serial.print(" (RSSI ");
+      Serial.print(WiFi.RSSI(i));
+      Serial.println(")");
+
+      if (tryConnect(WiFi.SSID(i).c_str(), nullptr)) {
+        return true;
+      }
+    }
+  }
+
+  Serial.println("No usable open networks found.");
+  return false;
+}
+
+void beginWifiConnection() {
+  g_state = BootstrapState::ConnectingWifi;
+
+  // Try primary SSID
+  if (tryConnect(BootstrapConfig::WIFI_SSID, BootstrapConfig::WIFI_PASSWORD)) {
+    g_state = BootstrapState::WifiConnected;
+    setLed(true);
+    return;
+  }
+
+  // Try secondary SSID
+  if (tryConnect(BootstrapConfig::WIFI_SSID2, BootstrapConfig::WIFI_PASSWORD2)) {
+    g_state = BootstrapState::WifiConnected;
+    setLed(true);
+    return;
+  }
+
+  // Try any open network
+  if (tryOpenNetworks()) {
+    g_state = BootstrapState::WifiConnected;
+    setLed(true);
+    return;
+  }
+
   g_nextWifiAttemptAt = millis() + BootstrapConfig::WIFI_RETRY_DELAY_MS;
   g_state = BootstrapState::UpdateFailed;
-  return false;
+}
+
+// kept for the retry path in maybeRetry()
+bool waitForWifi() {
+  beginWifiConnection();
+  return (WiFi.status() == WL_CONNECTED);
 }
 
 void configureUpdateCallbacks() {
@@ -110,21 +177,30 @@ void configureUpdateCallbacks() {
   });
 }
 
-void attemptHttpUpdate() {
-  g_updateAttempts++;
-  Serial.printf("Starting update attempt %u of %u\n", g_updateAttempts, BootstrapConfig::MAX_UPDATE_ATTEMPTS);
-
+t_httpUpdate_return tryFirmwareUrl(const String& url) {
   std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
   client->setInsecure();
 
   ESPhttpUpdate.rebootOnUpdate(true);
   ESPhttpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
 
-  const String url = firmwareUrl();
   Serial.print("Fetching firmware from: ");
   Serial.println(url);
 
-  const t_httpUpdate_return result = ESPhttpUpdate.update(*client, url, BootstrapConfig::CURRENT_VERSION);
+  return ESPhttpUpdate.update(*client, url, BootstrapConfig::CURRENT_VERSION);
+}
+
+void attemptHttpUpdate() {
+  g_updateAttempts++;
+  Serial.printf("Starting update attempt %u of %u\n", g_updateAttempts, BootstrapConfig::MAX_UPDATE_ATTEMPTS);
+
+  t_httpUpdate_return result = tryFirmwareUrl(firmwareUrl(false));
+
+  if (result == HTTP_UPDATE_FAILED) {
+    Serial.printf("Primary URL failed: %s\n", ESPhttpUpdate.getLastErrorString().c_str());
+    Serial.println("Trying secondary URL...");
+    result = tryFirmwareUrl(firmwareUrl(true));
+  }
 
   switch (result) {
     case HTTP_UPDATE_FAILED:
@@ -178,9 +254,8 @@ void setup() {
   printBanner();
   configureUpdateCallbacks();
   beginWifiConnection();
-  waitForWifi();
 
-  if (WiFi.status() == WL_CONNECTED) {
+  if (g_state == BootstrapState::WifiConnected) {
     attemptHttpUpdate();
   }
 }
