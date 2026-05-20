@@ -33,11 +33,15 @@ String restoreToString(RelayRestoreBehavior value) {
 
 void fillReportedConfig(JsonObject target, const AppConfig& config) {
   target["device_name"] = config.deviceName;
+  target["timezone"] = config.timezone;
   target["current_mode"] = modeToString(config.currentMode);
   target["relay_restore_behavior"] = restoreToString(config.relayRestoreBehavior);
   target["monitor_interval_seconds"] = config.monitorIntervalSeconds;
   target["boot_warmup_seconds"] = config.bootWarmupSeconds;
   target["manual_button_enabled"] = config.manualButtonEnabled;
+  target["status_led_enabled"] = config.statusLedEnabled;
+  target["event_log_max_entries"] = config.eventLogMaxEntries;
+  target["notification_cooldown_seconds"] = config.notificationCooldownSeconds;
 
   JsonArray internetTargets = target["internet"]["targets"].to<JsonArray>();
   for (const auto& value : config.internet.targets) internetTargets.add(value);
@@ -78,7 +82,7 @@ void fillReportedConfig(JsonObject target, const AppConfig& config) {
   target["power"]["sample_rate_hz"] = config.power.sampleRateHz;
   target["power"]["batch_seconds"] = config.power.batchSeconds;
   target["power"]["include_wifi_stats"] = config.power.includeWifiStats;
-  target["power"]["include_frequency"] = config.power.includeFrequency;
+  // include_frequency is omitted: no real mains-frequency value is ever produced.
 }
 
 void fillPowerStatus(JsonDocument& doc, const AppConfig& config,

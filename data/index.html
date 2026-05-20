@@ -109,6 +109,52 @@
             <span class="label-row"><span>Enable short button press for relay in Smart Plug mode</span><details class="field-help"><summary aria-label="Help for Manual Button">?</summary><div class="help-card">When this is enabled, a short press on the physical button toggles the relay while in Smart Plug mode. Turn it off if you want to prevent accidental manual power changes on important equipment.</div></details></span>
           </label>
 
+          <label class="checkbox-row">
+            <input id="cfg-status-led" name="status_led_enabled" type="checkbox">
+            <span class="label-row"><span>Enable the status LED</span><details class="field-help"><summary aria-label="Help for Status LED">?</summary><div class="help-card">When enabled, the onboard LED reflects device health and Wi-Fi state. Turn it off if the device is in a location where a blinking light is a nuisance.</div></details></span>
+          </label>
+
+          <label>
+            <span class="label-row"><span>Timezone</span><details class="field-help"><summary aria-label="Help for Timezone">?</summary><div class="help-card">IANA timezone name (for example America/New_York) used for any time-of-day display. It does not change watchdog timing, which always uses elapsed seconds.</div></details></span>
+            <input id="cfg-timezone" name="timezone" maxlength="64" placeholder="America/New_York">
+          </label>
+
+          <label>
+            <span class="label-row"><span>Event Log Max Entries</span><details class="field-help"><summary aria-label="Help for Event Log Max Entries">?</summary><div class="help-card">How many recent events the device keeps in its rolling log. Larger values keep more history but use more memory; the device clamps this to a safe range.</div></details></span>
+            <input id="cfg-event-log-max" name="event_log_max_entries" type="number" min="25" max="1000">
+          </label>
+
+          <label>
+            <span class="label-row"><span>Notification Cooldown (sec)</span><details class="field-help"><summary aria-label="Help for Notification Cooldown">?</summary><div class="help-card">Minimum time between repeated notifications so a flapping condition does not flood your webhook endpoint.</div></details></span>
+            <input id="cfg-notification-cooldown" name="notification_cooldown_seconds" type="number" min="0" max="3600">
+          </label>
+
+          <section class="mode-section">
+            <h3>Notifications</h3>
+            <label class="checkbox-row">
+              <input id="cfg-notify-enabled" type="checkbox">
+              <span class="label-row"><span>Enable outbound notifications</span><details class="field-help"><summary aria-label="Help for Notifications Enabled">?</summary><div class="help-card">When enabled, the device POSTs a JSON notification to your webhook URL on the selected events.</div></details></span>
+            </label>
+            <label><span class="label-row"><span>Webhook URL</span><details class="field-help"><summary aria-label="Help for Webhook URL">?</summary><div class="help-card">The HTTPS endpoint that receives notification POSTs. Leave blank to disable webhook delivery.</div></details></span><input id="cfg-notify-webhook-url" maxlength="256" placeholder="https://example.com/hook"></label>
+            <label><span class="label-row"><span>Webhook Auth Token</span><details class="field-help"><summary aria-label="Help for Webhook Auth Token">?</summary><div class="help-card">Optional bearer token sent with notification POSTs. Leave blank to keep the existing token unchanged.</div></details></span><input id="cfg-notify-webhook-token" type="password" maxlength="128" placeholder="Leave blank to keep current"></label>
+            <label class="checkbox-row">
+              <input id="cfg-notify-on-trigger" type="checkbox">
+              <span>Notify when a watchdog incident triggers</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="cfg-notify-on-recovery" type="checkbox">
+              <span>Notify when an incident recovers</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="cfg-notify-on-max-cycles" type="checkbox">
+              <span>Notify when the cycle limit is reached</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="cfg-notify-test-enabled" type="checkbox">
+              <span>Allow sending test notifications</span>
+            </label>
+          </section>
+
           <section id="cfg-internet-section" class="mode-section">
             <h3>Internet Watchdog</h3>
             <label>

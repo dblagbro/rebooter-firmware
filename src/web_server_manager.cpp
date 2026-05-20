@@ -5,7 +5,6 @@
 #include <WiFiClientSecureBearSSL.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
-#include <ESP.h>
 #include "web_server_manager.h"
 #include "relay_controller.h"
 #include "config_manager.h"
@@ -128,6 +127,40 @@ static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
             <input id="cfg-manual-button" name="manual_button_enabled" type="checkbox">
             <span class="label-row"><span>Enable short button press for relay in Smart Plug mode</span><details class="field-help"><summary aria-label="Help for Manual Button">?</summary><div class="help-card">When this is enabled, a short press on the physical button toggles the relay while in Smart Plug mode. Turn it off if you want to prevent accidental manual power changes on important equipment.</div></details></span>
           </label>
+
+          <label class="checkbox-row">
+            <input id="cfg-status-led" name="status_led_enabled" type="checkbox">
+            <span>Enable the status LED</span>
+          </label>
+
+          <label>
+            <span>Timezone</span>
+            <input id="cfg-timezone" name="timezone" maxlength="64" placeholder="America/New_York">
+          </label>
+
+          <label>
+            <span>Event Log Max Entries</span>
+            <input id="cfg-event-log-max" name="event_log_max_entries" type="number" min="25" max="1000">
+          </label>
+
+          <label>
+            <span>Notification Cooldown (sec)</span>
+            <input id="cfg-notification-cooldown" name="notification_cooldown_seconds" type="number" min="0" max="3600">
+          </label>
+
+          <section class="mode-section">
+            <h3>Notifications</h3>
+            <label class="checkbox-row">
+              <input id="cfg-notify-enabled" type="checkbox">
+              <span>Enable outbound notifications</span>
+            </label>
+            <label><span>Webhook URL</span><input id="cfg-notify-webhook-url" maxlength="256" placeholder="https://example.com/hook"></label>
+            <label><span>Webhook Auth Token</span><input id="cfg-notify-webhook-token" type="password" maxlength="128" placeholder="Leave blank to keep current"></label>
+            <label class="checkbox-row"><input id="cfg-notify-on-trigger" type="checkbox"><span>Notify when a watchdog incident triggers</span></label>
+            <label class="checkbox-row"><input id="cfg-notify-on-recovery" type="checkbox"><span>Notify when an incident recovers</span></label>
+            <label class="checkbox-row"><input id="cfg-notify-on-max-cycles" type="checkbox"><span>Notify when the cycle limit is reached</span></label>
+            <label class="checkbox-row"><input id="cfg-notify-test-enabled" type="checkbox"><span>Allow sending test notifications</span></label>
+          </section>
 
           <section id="cfg-internet-section" class="mode-section">
             <h3>Internet Watchdog</h3>
@@ -688,7 +721,20 @@ function renderConfig() {
   $('cfg-monitor-interval').value = state.config.monitor_interval_seconds ?? 5;
   $('cfg-boot-warmup').value = state.config.boot_warmup_seconds ?? 30;
   $('cfg-manual-button').checked = !!state.config.manual_button_enabled;
+  $('cfg-status-led').checked = state.config.status_led_enabled !== false;
+  $('cfg-timezone').value = state.config.timezone || 'America/New_York';
+  $('cfg-event-log-max').value = state.config.event_log_max_entries ?? 200;
+  $('cfg-notification-cooldown').value = state.config.notification_cooldown_seconds ?? 60;
   $('cfg-admin-username').value = state.config.admin_username || 'admin';
+
+  const notifications = state.config.notifications || {};
+  $('cfg-notify-enabled').checked = !!notifications.enabled;
+  $('cfg-notify-webhook-url').value = notifications.webhook_url || '';
+  $('cfg-notify-webhook-token').value = '';
+  $('cfg-notify-on-trigger').checked = notifications.send_on_trigger !== false;
+  $('cfg-notify-on-recovery').checked = notifications.send_on_recovery !== false;
+  $('cfg-notify-on-max-cycles').checked = notifications.send_on_max_cycles_reached !== false;
+  $('cfg-notify-test-enabled').checked = notifications.send_test_notification_enabled !== false;
 
   const internet = state.config.internet || {};
   $('cfg-internet-targets').value = Array.isArray(internet.targets) ? internet.targets.join('\n') : '';
@@ -854,9 +900,13 @@ async function handleConfigSave(event) {
     device_name: $('cfg-device-name').value.trim(),
     current_mode: $('cfg-mode').value,
     relay_restore_behavior: $('cfg-restore').value,
+    timezone: $('cfg-timezone').value.trim() || 'America/New_York',
     monitor_interval_seconds: Number($('cfg-monitor-interval').value || 5),
     boot_warmup_seconds: Number($('cfg-boot-warmup').value || 30),
     manual_button_enabled: $('cfg-manual-button').checked,
+    status_led_enabled: $('cfg-status-led').checked,
+    event_log_max_entries: Number($('cfg-event-log-max').value || 200),
+    notification_cooldown_seconds: Number($('cfg-notification-cooldown').value || 60),
     admin_username: $('cfg-admin-username').value.trim(),
     internet: {
       targets: splitTargets($('cfg-internet-targets').value),
@@ -884,7 +934,18 @@ async function handleConfigSave(event) {
   const password = $('cfg-admin-password').value;
   if (password) payload.admin_password = password;
 
-  if (state.config?.notifications) payload.notifications = state.config.notifications;
+  const notifications = {
+    enabled: $('cfg-notify-enabled').checked,
+    webhook_url: $('cfg-notify-webhook-url').value.trim(),
+    send_on_trigger: $('cfg-notify-on-trigger').checked,
+    send_on_recovery: $('cfg-notify-on-recovery').checked,
+    send_on_max_cycles_reached: $('cfg-notify-on-max-cycles').checked,
+    send_test_notification_enabled: $('cfg-notify-test-enabled').checked,
+  };
+  const notifyToken = $('cfg-notify-webhook-token').value;
+  if (notifyToken) notifications.webhook_auth_token = notifyToken;
+  payload.notifications = notifications;
+
   if (state.config?.central) payload.central = state.config.central;
 
   try {
@@ -1134,9 +1195,13 @@ static void sendConfigJson(bool includeProtectedFields = false) {
   doc["current_mode"] = modeToString(sConfig->currentMode);
   doc["relay_restore_behavior"] = restoreToString(sConfig->relayRestoreBehavior);
   doc["last_relay_on"] = sConfig->lastRelayOn;
+  doc["timezone"] = sConfig->timezone;
   doc["monitor_interval_seconds"] = sConfig->monitorIntervalSeconds;
   doc["boot_warmup_seconds"] = sConfig->bootWarmupSeconds;
   doc["manual_button_enabled"] = sConfig->manualButtonEnabled;
+  doc["status_led_enabled"] = sConfig->statusLedEnabled;
+  doc["event_log_max_entries"] = sConfig->eventLogMaxEntries;
+  doc["notification_cooldown_seconds"] = sConfig->notificationCooldownSeconds;
 
   JsonArray targets = doc["internet"]["targets"].to<JsonArray>();
   for (const auto& target : sConfig->internet.targets) targets.add(target);
@@ -1158,6 +1223,19 @@ static void sendConfigJson(bool includeProtectedFields = false) {
   doc["device"]["cooldown_seconds"] = sConfig->device.cooldownSeconds;
   doc["device"]["recovery_stability_seconds"] = sConfig->device.recoveryStabilitySeconds;
 
+  doc["notifications"]["enabled"] = sConfig->notifications.enabled;
+  doc["notifications"]["type"] = sConfig->notifications.type;
+  doc["notifications"]["webhook_url"] = sConfig->notifications.webhookUrl;
+  doc["notifications"]["webhook_method"] = sConfig->notifications.webhookMethod;
+  doc["notifications"]["has_webhook_auth_token"] = !sConfig->notifications.webhookAuthToken.isEmpty();
+  doc["notifications"]["send_on_trigger"] = sConfig->notifications.sendOnTrigger;
+  doc["notifications"]["send_on_recovery"] = sConfig->notifications.sendOnRecovery;
+  doc["notifications"]["send_on_max_cycles_reached"] = sConfig->notifications.sendOnMaxCyclesReached;
+  doc["notifications"]["send_test_notification_enabled"] = sConfig->notifications.sendTestNotificationEnabled;
+  if (includeProtectedFields) {
+    doc["notifications"]["webhook_auth_token"] = sConfig->notifications.webhookAuthToken;
+  }
+
   doc["central"]["enabled"] = sConfig->central.enabled;
   JsonArray centralBaseUrls = doc["central"]["base_urls"].to<JsonArray>();
   for (const auto& url : sConfig->central.baseUrls) centralBaseUrls.add(url);
@@ -1178,7 +1256,8 @@ static void sendConfigJson(bool includeProtectedFields = false) {
   doc["power"]["sample_rate_hz"] = sConfig->power.sampleRateHz;
   doc["power"]["batch_seconds"] = sConfig->power.batchSeconds;
   doc["power"]["include_wifi_stats"] = sConfig->power.includeWifiStats;
-  doc["power"]["include_frequency"] = sConfig->power.includeFrequency;
+  // include_frequency is intentionally not exposed: the CSE7766 path never produces a
+  // mains-frequency value, so surfacing it as a settable field advertises a fake capability.
 
   String out;
   serializeJson(doc, out);
@@ -1348,9 +1427,13 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
         return;
       }
     }
+    sConfig->timezone = doc["timezone"] | sConfig->timezone;
     sConfig->monitorIntervalSeconds = doc["monitor_interval_seconds"] | sConfig->monitorIntervalSeconds;
     sConfig->bootWarmupSeconds = doc["boot_warmup_seconds"] | sConfig->bootWarmupSeconds;
     sConfig->manualButtonEnabled = doc["manual_button_enabled"] | sConfig->manualButtonEnabled;
+    sConfig->statusLedEnabled = doc["status_led_enabled"] | sConfig->statusLedEnabled;
+    sConfig->eventLogMaxEntries = doc["event_log_max_entries"] | sConfig->eventLogMaxEntries;
+    sConfig->notificationCooldownSeconds = doc["notification_cooldown_seconds"] | sConfig->notificationCooldownSeconds;
 
     if (doc["internet"]["targets"].is<JsonArray>()) {
       sConfig->internet.targets.clear();
@@ -1375,8 +1458,14 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     sConfig->device.recoveryStabilitySeconds = doc["device"]["recovery_stability_seconds"] | sConfig->device.recoveryStabilitySeconds;
 
     sConfig->notifications.enabled = doc["notifications"]["enabled"] | sConfig->notifications.enabled;
+    sConfig->notifications.type = doc["notifications"]["type"] | sConfig->notifications.type;
     sConfig->notifications.webhookUrl = doc["notifications"]["webhook_url"] | sConfig->notifications.webhookUrl;
+    sConfig->notifications.webhookMethod = doc["notifications"]["webhook_method"] | sConfig->notifications.webhookMethod;
     sConfig->notifications.webhookAuthToken = doc["notifications"]["webhook_auth_token"] | sConfig->notifications.webhookAuthToken;
+    sConfig->notifications.sendOnTrigger = doc["notifications"]["send_on_trigger"] | sConfig->notifications.sendOnTrigger;
+    sConfig->notifications.sendOnRecovery = doc["notifications"]["send_on_recovery"] | sConfig->notifications.sendOnRecovery;
+    sConfig->notifications.sendOnMaxCyclesReached = doc["notifications"]["send_on_max_cycles_reached"] | sConfig->notifications.sendOnMaxCyclesReached;
+    sConfig->notifications.sendTestNotificationEnabled = doc["notifications"]["send_test_notification_enabled"] | sConfig->notifications.sendTestNotificationEnabled;
 
     const String previousEnrollmentToken = sConfig->central.enrollmentToken;
     sConfig->central.enabled = doc["central"]["enabled"] | sConfig->central.enabled;
@@ -1398,7 +1487,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     sConfig->power.sampleRateHz = doc["power"]["sample_rate_hz"] | sConfig->power.sampleRateHz;
     sConfig->power.batchSeconds = doc["power"]["batch_seconds"] | sConfig->power.batchSeconds;
     sConfig->power.includeWifiStats = doc["power"]["include_wifi_stats"] | sConfig->power.includeWifiStats;
-    sConfig->power.includeFrequency = doc["power"]["include_frequency"] | sConfig->power.includeFrequency;
+    // include_frequency intentionally not accepted: no real frequency value is ever produced.
     if (!sConfig->central.enrollmentToken.isEmpty() && sConfig->central.enrollmentToken != previousEnrollmentToken) {
       sConfig->central.deviceId = "";
       sConfig->central.deviceToken = "";

@@ -156,7 +156,10 @@ static void validateConfig(AppConfig& config) {
   config.device.recoveryStabilitySeconds = clampU32(config.device.recoveryStabilitySeconds, 0, 3600);
 
   config.notifications.type.trim();
-  if (config.notifications.type != "webhook" && config.notifications.type != "pushover") config.notifications.type = "webhook";
+  // Pushover has no transport implemented in notification_manager.cpp, so it is not
+  // an accepted type. Restricting it here keeps the schema honest (no advertised-but-fake
+  // capability) until a real Pushover transport ships.
+  if (config.notifications.type != "webhook") config.notifications.type = "webhook";
   config.notifications.webhookMethod.trim();
   if (config.notifications.webhookMethod != "POST") config.notifications.webhookMethod = "POST";
   config.notifications.webhookUrl.trim();
@@ -195,6 +198,9 @@ static void validateConfig(AppConfig& config) {
 
   config.power.sampleRateHz = static_cast<uint8_t>(clampU32(config.power.sampleRateHz, 1, 2));
   config.power.batchSeconds = static_cast<uint16_t>(clampU32(config.power.batchSeconds, 10, 60));
+  // The CSE7766 path never produces a mains-frequency value; keep this off so the field
+  // is not advertised as a real capability anywhere downstream.
+  config.power.includeFrequency = false;
 }
 
 static bool loadFromPath(const char* path, AppConfig& out) {
