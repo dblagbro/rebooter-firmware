@@ -16,6 +16,7 @@
 #include "status_payload.h"
 #include "wifi_manager.h"
 #include "crash_recorder.h"
+#include "power_monitor.h"
 
 static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html>
@@ -1259,6 +1260,7 @@ static MonitorEngine* sMonitor = nullptr;
 static OtaManager* sOta = nullptr;
 static AuthManager* sAuth = nullptr;
 static WifiManagerService* sWifi = nullptr;
+static PowerMonitor* sPower = nullptr;
 
 static bool parseBaseUrl(const String& baseUrl, String& host, uint16_t& port, String& rootPath) {
   String url = baseUrl;
@@ -1496,7 +1498,8 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
                              EventLog* eventLog, MonitorEngine* monitor,
                              OtaManager* ota,
                              AuthManager* auth,
-                             WifiManagerService* wifi) {
+                             WifiManagerService* wifi,
+                             PowerMonitor* power) {
   config_ = config;
   status_ = status;
   sConfig = config;
@@ -1508,6 +1511,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   sOta = ota;
   sAuth = auth;
   sWifi = wifi;
+  sPower = power;
   server.collectHeaders("X-Rebooter-Auth");
 
   server.on("/api/status", HTTP_GET, []() {
@@ -1622,6 +1626,25 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
   });
 
   server.on("/api/system/crash/clear", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
+
+  // Fixed-size in-RAM ring of the most recent raw power samples. Public read,
+  // consistent with the other read endpoints.
+  server.on("/api/power/recent", HTTP_GET, []() {
+    if (!sPower) {
+      server.send(200, "application/json", "[]");
+      return;
+    }
+    server.send(200, "application/json", sPower->recentSamplesJson());
+  });
+
+  server.on("/api/power/energy/reset", HTTP_POST, []() {
+    if (!requireAuth()) return;
+    if (sPower) sPower->resetEnergy();
+    sEventLog->add("power", "Energy accumulator reset by API");
+    server.send(200, "application/json", "{\"ok\":true}");
+  });
+
+  server.on("/api/power/energy/reset", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
 
   server.on("/api/relay/on", HTTP_POST, []() {
     if (!requireAuth()) return;

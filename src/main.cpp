@@ -176,8 +176,8 @@ void setup() {
   g_monitor.begin(&g_config, &g_status, &g_relay, &g_notifier, &g_eventLog);
   g_ota.begin(&g_eventLog);
   g_auth.begin(&g_config, &g_eventLog);
-  g_central.begin(&g_config, &g_status, &g_cfgMgr, &g_eventLog, &g_relay, &g_wifi);
-  g_web.begin(&g_config, &g_status, &g_relay, &g_cfgMgr, &g_eventLog, &g_monitor, &g_ota, &g_auth, &g_wifi);
+  g_central.begin(&g_config, &g_status, &g_cfgMgr, &g_eventLog, &g_relay, &g_wifi, &g_power);
+  g_web.begin(&g_config, &g_status, &g_relay, &g_cfgMgr, &g_eventLog, &g_monitor, &g_ota, &g_auth, &g_wifi, &g_power);
   g_timeSync.begin(&g_status);
 
   g_led.setPattern(LedPattern::SlowBlink);

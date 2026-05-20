@@ -85,6 +85,38 @@ void fillReportedConfig(JsonObject target, const AppConfig& config) {
   // include_frequency is omitted: no real mains-frequency value is ever produced.
 }
 
+void fillHeartbeatPowerSummary(JsonDocument& doc, const AppConfig& config,
+                               const RuntimeStatus* status) {
+  // Compact, bounded power summary carried inside the heartbeat envelope.
+  // This replaces the standalone /device/power-samples HTTPS upload that
+  // crashed low-heap S31 units: no second TLS session, fixed-size payload.
+  // Forward-compatible: the hub may ignore these fields until its
+  // power-in-heartbeat consumer ships.
+  if (!config.power.enabled || !status) return;
+  const PowerLiveStatus& power = status->power;
+
+  JsonObject p = doc["power"].to<JsonObject>();
+  p["enabled"] = true;
+  p["chip_seen"] = power.chipSeen;
+  p["uart_contended"] = power.uartContended;
+  p["upload_mode"] = "heartbeat_piggyback";
+  p["latest_v"] = power.voltageV;
+  p["latest_a"] = power.currentMa / 1000.0f;
+  p["latest_pf"] = power.powerFactor;
+  p["energy_wh"] = power.energyWh;
+  p["valid_frames"] = power.validFrameCount;
+  p["invalid_frames"] = power.invalidFrameCount;
+  if (power.aggregate.hasData && power.aggregate.sampleCount > 0) {
+    p["min_w"] = power.aggregate.minW;
+    p["max_w"] = power.aggregate.maxW;
+    p["avg_w"] = power.aggregate.sumW / power.aggregate.sampleCount;
+    p["sample_count"] = power.aggregate.sampleCount;
+    p["window_start_uptime_seconds"] = power.aggregate.windowStartUptimeSeconds;
+  } else {
+    p["sample_count"] = 0;
+  }
+}
+
 void fillPowerStatus(JsonDocument& doc, const AppConfig& config,
                      const RuntimeStatus* status) {
   doc["power_analytics_enabled"] = config.power.enabled;
@@ -108,6 +140,20 @@ void fillPowerStatus(JsonDocument& doc, const AppConfig& config,
   doc["power_last_sample_unix_ms"] = power.lastSampleUnixMs;
   doc["power_valid_frame_count"] = power.validFrameCount;
   doc["power_invalid_frame_count"] = power.invalidFrameCount;
+  doc["power_uart_contended"] = power.uartContended;
+  // Power telemetry now rides the heartbeat envelope instead of a separate
+  // HTTPS upload that crashed low-heap units; expose the mode so the
+  // capability is visible even when memory-constrained.
+  doc["power_upload_mode"] = "heartbeat_piggyback";
+
+  if (power.aggregate.hasData && power.aggregate.sampleCount > 0) {
+    JsonObject agg = doc["power_aggregate"].to<JsonObject>();
+    agg["min_w"] = power.aggregate.minW;
+    agg["max_w"] = power.aggregate.maxW;
+    agg["avg_w"] = power.aggregate.sumW / power.aggregate.sampleCount;
+    agg["sample_count"] = power.aggregate.sampleCount;
+    agg["window_start_uptime_seconds"] = power.aggregate.windowStartUptimeSeconds;
+  }
 
   if (!power.realSample) return;
 
@@ -175,6 +221,10 @@ void fillHeartbeatDocument(JsonDocument& doc, const AppConfig& config,
     doc["last_event_at"] = "";
     fillPowerStatus(doc, config, status);
   }
+
+  // Compact power summary rides every heartbeat (including compact mode), so
+  // power telemetry no longer needs a separate, crash-prone HTTPS upload.
+  fillHeartbeatPowerSummary(doc, config, status);
 
   if (includeReportedConfig && !compactMode) {
     JsonObject reportedConfig = doc["reported_config"].to<JsonObject>();
