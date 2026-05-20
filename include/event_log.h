@@ -16,10 +16,12 @@ public:
   void begin(uint16_t maxEntries);
   void add(const String& type, const String& message);
   String asJson() const;
+  void loop();
+  void flush();
 private:
   void trimToLimit();
   void load();
-  void persist() const;
+  void persist();
 
   const char* logPath_ = "/events.json";
   uint16_t maxEntries_ = 200;
@@ -27,4 +29,8 @@ private:
   uint32_t nextSeq_ = 1;
   uint32_t bootId_ = 1;
   std::vector<EventEntry> items_;
+  bool dirty_ = false;
+  uint32_t lastMutationMillis_ = 0;
+  uint32_t lastPersistAttemptMillis_ = 0;
+  uint32_t autoPersistAllowedAtMillis_ = 0;
 };

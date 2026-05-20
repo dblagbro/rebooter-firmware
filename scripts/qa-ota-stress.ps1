@@ -48,6 +48,42 @@ function Invoke-AuthPost {
   }
 }
 
+function Invoke-OtaUpload {
+  Add-Type -AssemblyName System.Net.Http
+  $bytes = [System.IO.File]::ReadAllBytes($FirmwarePath)
+  $client = [System.Net.Http.HttpClient]::new()
+  $content = [System.Net.Http.MultipartFormDataContent]::new()
+  $fileContent = [System.Net.Http.ByteArrayContent]::new($bytes)
+  $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/octet-stream")
+  $content.Add($fileContent, "update", [System.IO.Path]::GetFileName($FirmwarePath))
+
+  $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "$BaseUrl/api/system/ota")
+  if (-not [string]::IsNullOrWhiteSpace($AuthToken)) {
+    $request.Headers.Add("X-Rebooter-Auth", $AuthToken)
+  }
+  $request.Content = $content
+
+  try {
+    $response = $client.SendAsync($request).GetAwaiter().GetResult()
+    return [pscustomobject]@{
+      accepted = ($response.IsSuccessStatusCode -and [int]$response.StatusCode -eq 200)
+      status = [int]$response.StatusCode
+      body = [string]$response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    }
+  } catch {
+    return [pscustomobject]@{
+      accepted = $false
+      status = -1
+      body = $_.Exception.Message
+    }
+  } finally {
+    $client.Dispose()
+    $content.Dispose()
+    $fileContent.Dispose()
+    $request.Dispose()
+  }
+}
+
 if (-not (Test-Path $FirmwarePath)) {
   throw "Firmware file not found: $FirmwarePath"
 }
@@ -75,17 +111,10 @@ $results = [ordered]@{
 $lastSeenBootId = $baselineBootId
 
 for ($cycle = 1; $cycle -le $Cycles; $cycle++) {
-  $uploadStdout = ""
-  $uploadExitCode = 0
-  try {
-    $uploadStdout = & curl.exe -s -S -H "X-Rebooter-Auth: $AuthToken" -F "update=@$FirmwarePath" "$BaseUrl/api/system/ota" 2>&1
-    $uploadExitCode = $LASTEXITCODE
-  } catch {
-    $uploadStdout = $_.Exception.Message
-    $uploadExitCode = 1
-  }
-
-  $accepted = ($uploadStdout -match '"ok"\s*:\s*true') -or ($uploadExitCode -eq 56) -or ($uploadStdout -match 'Recv failure: Connection was reset')
+  $upload = Invoke-OtaUpload
+  $uploadStdout = [string]$upload.body
+  $uploadExitCode = if ($upload.accepted) { 0 } else { $upload.status }
+  $accepted = $upload.accepted
   $deadline = (Get-Date).AddSeconds($PollSeconds)
   $samples = New-Object System.Collections.Generic.List[object]
   $firstReachableSeconds = $null
@@ -147,6 +176,16 @@ for ($cycle = 1; $cycle -le $Cycles; $cycle++) {
     seq_monotonic = $seqMonotonic
   }
 
+  $effectiveUploadAccepted =
+    $accepted -or
+    ($newBootObserved -and $null -ne $firstReachableSeconds -and $null -ne $finalStatus)
+  $effectiveUploadReason =
+    if ($accepted) { "http_200" }
+    elseif ($effectiveUploadAccepted) { "reboot_cutoff_assumed" }
+    else { "transport_or_no_reboot" }
+  $cycleResult["effective_upload_accepted"] = $effectiveUploadAccepted
+  $cycleResult["effective_upload_reason"] = $effectiveUploadReason
+
   if ($null -ne $finalStatus -and ($finalStatus.recovery_mode -or $finalStatus.central_state -eq "recovery_mode")) {
     $rebootResp = Invoke-AuthPost "/api/system/reboot"
     $cycleResult["recovery_cleanup_reboot"] = $rebootResp
@@ -158,7 +197,7 @@ for ($cycle = 1; $cycle -le $Cycles; $cycle++) {
 
 $summaryFailures = @()
 foreach ($cycleResult in $results.cycle_results) {
-  if (-not $cycleResult.upload_accepted) { $summaryFailures += "cycle $($cycleResult.cycle): upload not accepted" }
+  if (-not $cycleResult.effective_upload_accepted) { $summaryFailures += "cycle $($cycleResult.cycle): upload not accepted" }
   if ($null -eq $cycleResult.first_reachable_seconds) { $summaryFailures += "cycle $($cycleResult.cycle): device never became reachable" }
   if (-not $cycleResult.new_boot_observed) { $summaryFailures += "cycle $($cycleResult.cycle): no new boot observed in event log" }
   if (-not $cycleResult.seq_monotonic) { $summaryFailures += "cycle $($cycleResult.cycle): event seq not monotonic" }

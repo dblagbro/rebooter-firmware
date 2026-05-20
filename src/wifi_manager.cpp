@@ -53,6 +53,7 @@ static bool tryDevWifi() {
 }
 
 bool WifiManagerService::begin(const String& apName, bool forcePortal) {
+  provisionedViaPortal_ = false;
   if (!forcePortal && tryDevWifi()) {
     captivePortal_ = false;
     setupApName_ = ProvisioningConfig::setupApName(ESP.getChipId());
@@ -83,6 +84,7 @@ bool WifiManagerService::begin(const String& apName, bool forcePortal) {
       ? wm.startConfigPortal(setupApName_.c_str(), setupApPasswordOrNull())
       : wm.autoConnect(setupApName_.c_str(), setupApPasswordOrNull());
   captivePortal_ = !ok;
+  provisionedViaPortal_ = forcePortal && ok;
   if (ok) {
     Serial.print("Provisioned Wi-Fi connected. IP: ");
     Serial.println(WiFi.localIP());
@@ -107,4 +109,17 @@ bool WifiManagerService::inCaptivePortal() const {
 
 String WifiManagerService::setupApName() const {
   return setupApName_;
+}
+
+bool WifiManagerService::provisionedViaPortal() const {
+  return provisionedViaPortal_;
+}
+
+void WifiManagerService::clearProvisionedCredentials() {
+  wm.resetSettings();
+  WiFi.persistent(true);
+  WiFi.disconnect(true);
+  delay(250);
+  captivePortal_ = false;
+  provisionedViaPortal_ = false;
 }

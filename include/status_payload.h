@@ -12,8 +12,12 @@ String healthToString(HealthState state);
 String restoreToString(RelayRestoreBehavior value);
 
 void fillReportedConfig(JsonObject target, const AppConfig& config);
+void fillPowerStatus(JsonDocument& doc, const AppConfig& config,
+                     const RuntimeStatus* status);
 void fillHeartbeatDocument(JsonDocument& doc, const AppConfig& config,
                            const RuntimeStatus* status,
-                           const String& firmwareVersion);
+                           const String& firmwareVersion,
+                           bool includeReportedConfig,
+                           bool compactMode = false);
 
 }

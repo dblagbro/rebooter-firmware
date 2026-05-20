@@ -97,3 +97,29 @@ Current scope: deep regression / release hardening
 - Power sample upload path still needs explicit runtime validation against a receiving hub.
 - Browser-plugin console log capture is not a reliable per-tab pass/fail source by
   itself; use DOM/API evidence as the primary signal.
+
+## 2026-05-15 Recovery/Reset Follow-up
+
+- Added destructive-path harness:
+  - `scripts/qa-destructive-path-proof.ps1`
+- Follow-up expectations for the next live assisted run:
+  1. capture protected baseline backup with auth
+  2. prove plain reboot return on LAN
+  3. prove explicit recovery boot requires phone-assisted reprovisioning
+  4. verify successful reprovisioning auto-reboots into a normal boot
+  5. prove factory reset clears config/auth/event log and provisioned Wi-Fi
+  6. restore the bench device from the protected backup
+- Current constraint:
+  - this flow cannot be fully automated from the workstation alone because
+    setup AP reprovisioning intentionally moves the device off the LAN and
+    must be completed from a phone or another client.
+
+## 2026-05-15 Assisted Destructive Proof Result
+
+- Completed on `.48` with phone-assisted reprovisioning.
+- Proven:
+  - explicit recovery boot can return to a normal boot after reprovisioning
+  - factory reset returns the device to a clean unauthenticated / unregistered state
+  - protected-backup restore can return the bench unit to its prior named state
+- Remaining manual gap:
+  - physical button short/3s/10s/30s behavior still requires hands-on proof

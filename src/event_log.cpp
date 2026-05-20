@@ -3,10 +3,19 @@
 #include <ArduinoJson.h>
 #include "event_log.h"
 
+namespace {
+constexpr uint32_t EVENT_LOG_PERSIST_DEBOUNCE_MS = 1500UL;
+constexpr uint32_t EVENT_LOG_PERSIST_RETRY_MS = 5000UL;
+constexpr uint32_t EVENT_LOG_MIN_FREE_HEAP = 12000UL;
+constexpr uint32_t EVENT_LOG_BOOT_QUIET_PERIOD_MS = 600000UL;
+}
+
 void EventLog::begin(uint16_t maxEntries) {
   maxEntries_ = max<uint16_t>(25, min<uint16_t>(maxEntries, 100));
+  autoPersistAllowedAtMillis_ = millis() + EVENT_LOG_BOOT_QUIET_PERIOD_MS;
   load();
   trimToLimit();
+  items_.reserve(maxEntries_);
   if (!items_.empty()) {
     const EventEntry& last = items_.back();
     nextSeq_ = max<uint32_t>(last.seq + 1, static_cast<uint32_t>(items_.size() + 1));
@@ -40,7 +49,8 @@ void EventLog::add(const String& type, const String& message) {
 
   items_.push_back({nextSeq_++, bootId_, nowSeconds, cleanType, cleanMessage});
   trimToLimit();
-  persist();
+  dirty_ = true;
+  lastMutationMillis_ = millis();
 }
 
 String EventLog::asJson() const {
@@ -114,7 +124,32 @@ void EventLog::load() {
   }
 }
 
-void EventLog::persist() const {
+void EventLog::loop() {
+  if (!dirty_) return;
+
+  const uint32_t now = millis();
+  if (now < autoPersistAllowedAtMillis_) return;
+  if ((now - lastMutationMillis_) < EVENT_LOG_PERSIST_DEBOUNCE_MS) return;
+  flush();
+}
+
+void EventLog::flush() {
+  if (!dirty_) return;
+
+  const uint32_t now = millis();
+  if (ESP.getFreeHeap() < EVENT_LOG_MIN_FREE_HEAP) {
+    if ((now - lastPersistAttemptMillis_) >= EVENT_LOG_PERSIST_RETRY_MS) {
+      lastPersistAttemptMillis_ = now;
+    }
+    return;
+  }
+
+  persist();
+  dirty_ = false;
+  lastPersistAttemptMillis_ = now;
+}
+
+void EventLog::persist() {
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
   for (const auto& item : items_) {

@@ -12,8 +12,11 @@ public:
   String ipAddress() const;
   bool inCaptivePortal() const;
   String setupApName() const;
+  bool provisionedViaPortal() const;
+  void clearProvisionedCredentials();
 private:
   bool captivePortal_ = false;
+  bool provisionedViaPortal_ = false;
   String setupApName_;
 };
 

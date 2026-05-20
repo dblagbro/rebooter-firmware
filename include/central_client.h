@@ -10,16 +10,21 @@
 class ConfigManager;
 class EventLog;
 class RelayController;
+class WifiManagerService;
 
 class CentralClient {
 public:
-  void begin(AppConfig* config, RuntimeStatus* status, ConfigManager* cfgMgr, EventLog* eventLog, RelayController* relay);
+  void begin(AppConfig* config, RuntimeStatus* status, ConfigManager* cfgMgr, EventLog* eventLog,
+             RelayController* relay, WifiManagerService* wifi);
   void loop();
 
 private:
   bool postWithFallback(const String& path, const String& authToken,
                         const String& body, String& responseBody, int& httpCode,
                         String& selectedBaseUrl);
+  bool postWithoutResponseWithFallback(const String& path, const String& authToken,
+                                       const String& body, String& responseBody, int& httpCode,
+                                       String& selectedBaseUrl);
   bool getWithFallback(const String& path, const String& authToken,
                        String& responseBody, int& httpCode,
                        String& selectedBaseUrl);
@@ -38,16 +43,26 @@ private:
                          bool relayState);
   bool executeCommand(const JsonObject& cmd, String& resultStatus,
                       String& resultMessage, bool& includeRelayState,
-                      bool& relayState, bool& shouldRestart);
+                      bool& relayState, bool& shouldRestart,
+                      String& restartReason);
   void persistRelayState();
   String effectiveAlias() const;
   void setState(const String& state);
+  void scheduleSteadyStateWork(uint32_t now);
+  void scheduleTransportFailureCooldown(uint32_t now, bool rateLimited);
+  void logThrottled(uint32_t& lastAtMs, const String& type, const String& message,
+                    uint32_t minIntervalMs);
+  bool shouldIncludeReportedConfig(uint32_t now) const;
+  bool shouldUseCompactHeartbeat() const;
+  bool shouldUseCompactPowerUpload() const;
+  uint32_t powerUploadIntervalMs() const;
 
   AppConfig* config_ = nullptr;
   RuntimeStatus* status_ = nullptr;
   ConfigManager* cfgMgr_ = nullptr;
   EventLog* eventLog_ = nullptr;
   RelayController* relay_ = nullptr;
+  WifiManagerService* wifi_ = nullptr;
 
   uint32_t nextAnnounceAttemptAt_ = 0;
   uint32_t nextRegisterAttemptAt_ = 0;
@@ -56,12 +71,34 @@ private:
   uint32_t nextFirmwareCheckAt_ = 0;
   uint32_t nextPowerSampleAt_ = 0;
   uint32_t nextPowerUploadAt_ = 0;
+  uint32_t nextTransportSlotAt_ = 0;
+  uint32_t lastQueuedRealSampleMillis_ = 0;
+  uint32_t lastReportedConfigSentAtMs_ = 0;
   uint32_t retryBackoffMs_ = 30000;
+  uint32_t lastAnnounceFailureLogAtMs_ = 0;
+  uint32_t lastRegisterFailureLogAtMs_ = 0;
+  uint32_t lastHeartbeatFailureLogAtMs_ = 0;
+  uint32_t lastPollFailureLogAtMs_ = 0;
+  uint32_t lastPowerFailureLogAtMs_ = 0;
+  uint32_t lastFirmwareFailureLogAtMs_ = 0;
+  uint32_t lastCommandResultFailureLogAtMs_ = 0;
+  uint32_t lastCompactHeartbeatLogAtMs_ = 0;
+  bool pendingReportedConfig_ = true;
+  bool steadyStateScheduled_ = false;
 
   struct PowerSampleRecord {
     uint32_t sampledUptimeSeconds = 0;
+    uint64_t sampledUnixMs = 0;
     int16_t rssiDbm = 0;
     uint8_t sourceFlags = 0;
+    float voltageV = 0.0f;
+    uint32_t currentMa = 0;
+    uint32_t estimatedCurrentMa = 0;
+    float powerW = 0.0f;
+    float apparentPowerVa = 0.0f;
+    float powerFactor = 1.0f;
+    float frequencyHz = 0.0f;
+    uint32_t energyWh = 0;
   };
   std::vector<PowerSampleRecord> powerSamples_;
 };
