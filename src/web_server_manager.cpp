@@ -15,6 +15,7 @@
 #include "auth_manager.h"
 #include "status_payload.h"
 #include "wifi_manager.h"
+#include "crash_recorder.h"
 
 static const char FALLBACK_INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html>
@@ -1547,6 +1548,10 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
       doc["central_last_heartbeat_seconds"] = lastHeartbeatStamp;
       doc["central_last_heartbeat_uptime_seconds"] = lastHeartbeatStamp;
       doc["central_heartbeat_age_seconds"] = heartbeatAgeSeconds;
+      doc["last_crash_present"] = sStatus->lastCrashPresent;
+      if (sStatus->lastCrashPresent) {
+        doc["last_crash_reason"] = sStatus->lastCrashReason;
+      }
       StatusPayload::fillPowerStatus(doc, *sConfig, sStatus);
       String out;
       serializeJson(doc, out);
@@ -1599,6 +1604,24 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     serializeJson(doc, out);
     server.send(200, "application/json", out);
   });
+
+  // Crash dumps reveal addresses and stack words, so keep them behind auth
+  // like the other diagnostic endpoints.
+  server.on("/api/system/crash", HTTP_GET, []() {
+    if (!requireAuth()) return;
+    server.send(200, "application/json", CrashRecorder::storedCrashesJson());
+  });
+
+  server.on("/api/system/crash/clear", HTTP_POST, []() {
+    if (!requireAuth()) return;
+    CrashRecorder::clearStoredCrashes();
+    sStatus->lastCrashPresent = false;
+    sStatus->lastCrashReason = "";
+    sEventLog->add("crash", "Stored crash dumps cleared by API");
+    server.send(200, "application/json", "{\"ok\":true}");
+  });
+
+  server.on("/api/system/crash/clear", HTTP_GET, []() { sendMethodNotAllowed("POST"); });
 
   server.on("/api/relay/on", HTTP_POST, []() {
     if (!requireAuth()) return;
@@ -1796,6 +1819,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     if (sWifi) {
       sWifi->clearProvisionedCredentials();
     }
+    CrashRecorder::clearStoredCrashes();
     sCfgMgr->reset();
     sCfgMgr->prepareForPlannedRestart("api_factory_reset");
     server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");

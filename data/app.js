@@ -250,6 +250,11 @@ function renderStatus() {
       : 'Device is up but Wi-Fi is not currently connected.';
   }
   setHealthPill(state.status.health_state);
+  if (state.status.last_crash_present) {
+    $('crash-summary').textContent = `A crash was recorded: ${state.status.last_crash_reason || 'unknown'}. Use Refresh Crash Dumps for details.`;
+  } else {
+    $('crash-summary').textContent = 'No crash recorded.';
+  }
   $('relay-hint').textContent = authRequired()
     ? 'Relay commands are locked until you unlock this browser tab with the local admin password.'
     : 'Relay commands are currently available without local auth.';
@@ -357,6 +362,33 @@ async function refreshConfig() {
 async function refreshEvents() {
   const events = await fetchJson('/api/events');
   $('events-view').textContent = JSON.stringify(events, null, 2);
+}
+
+async function refreshCrashDumps() {
+  try {
+    const dumps = await fetchJson('/api/system/crash');
+    if (Array.isArray(dumps) && dumps.length) {
+      $('crash-view').textContent = JSON.stringify(dumps, null, 2);
+      logMessage(`Loaded ${dumps.length} stored crash dump(s).`);
+    } else {
+      $('crash-view').textContent = 'No crash dumps stored on the device.';
+      logMessage('No crash dumps stored.');
+    }
+  } catch (error) {
+    $('crash-view').textContent = `Failed to load crash dumps: ${error.message}`;
+    logMessage(`Crash dump load failed: ${error.message}`);
+  }
+}
+
+async function handleCrashClear() {
+  try {
+    await postJson('/api/system/crash/clear', {});
+    $('crash-view').textContent = 'Crash dumps cleared.';
+    logMessage('Stored crash dumps cleared.');
+    await refreshStatus();
+  } catch (error) {
+    logMessage(`Crash clear failed: ${error.message}`);
+  }
 }
 
 async function refreshAll() {
@@ -581,6 +613,8 @@ function wireUi() {
   $('relay-off').addEventListener('click', () => handleRelay('/api/relay/off', 'Relay off'));
   $('relay-toggle').addEventListener('click', () => handleRelay('/api/relay/toggle', 'Relay toggle'));
   $('refresh-status').addEventListener('click', refreshAll);
+  $('crash-refresh').addEventListener('click', refreshCrashDumps);
+  $('crash-clear').addEventListener('click', handleCrashClear);
   $('cfg-mode').addEventListener('change', renderModeSections);
   $('cfg-hub-url-add').addEventListener('click', () => addHubUrlRow(''));
   $('cfg-wifi-add').addEventListener('click', () => addWifiRow({}));

@@ -250,6 +250,19 @@
 
     <section class="band">
       <article class="panel">
+        <h2>Diagnostics &mdash; Last Crash</h2>
+        <p class="hint" id="crash-summary">No crash recorded.</p>
+        <div class="row">
+          <button id="crash-refresh" class="secondary">Refresh Crash Dumps</button>
+          <button id="crash-clear" data-protected="true">Clear Crash Dumps</button>
+        </div>
+        <pre id="crash-view">Load crash dumps to view stored records.</pre>
+        <p class="hint">Stack words are raw addresses. Decode them offline with addr2line against the matching firmware ELF.</p>
+      </article>
+    </section>
+
+    <section class="band">
+      <article class="panel">
         <h2>Events</h2>
         <pre id="events-view">Loading events...</pre>
       </article>

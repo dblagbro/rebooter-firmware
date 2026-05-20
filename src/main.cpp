@@ -18,6 +18,7 @@
 #include "central_client.h"
 #include "power_monitor.h"
 #include "time_sync_manager.h"
+#include "crash_recorder.h"
 #include "firmware_version.h"
 
 AppConfig g_config;
@@ -97,6 +98,11 @@ void setup() {
   g_status.bootHealthyMarked = false;
 
   LittleFS.begin();
+  // Convert any RTC crash record left by custom_crash_callback into a
+  // LittleFS crash file. Done in normal-boot context where allocation is safe.
+  const bool crashCaptured = CrashRecorder::processPendingCrash();
+  g_status.lastCrashPresent = CrashRecorder::hasStoredCrash();
+  g_status.lastCrashReason = CrashRecorder::lastCrashReason();
   g_cfgMgr.begin();
   g_cfgMgr.load(g_config);
   const BootHealthSnapshot bootHealth = g_cfgMgr.beginBootSession(FIRMWARE_VERSION);
@@ -133,6 +139,9 @@ void setup() {
   }
   if (!g_status.resetReason.isEmpty()) {
     g_eventLog.add("boot", "Reset reason: " + g_status.resetReason);
+  }
+  if (crashCaptured) {
+    g_eventLog.add("crash", "Crash dump captured from previous boot: " + g_status.lastCrashReason);
   }
   g_status.lastPlannedRestartReason = bootHealth.previousPlannedRestartReason;
   if (!g_status.lastPlannedRestartReason.isEmpty()) {
@@ -235,6 +244,7 @@ void loop() {
     g_eventLog.add("system", "Factory reset requested by button");
     g_eventLog.flush();
     g_wifi.clearProvisionedCredentials();
+    CrashRecorder::clearStoredCrashes();
     g_cfgMgr.reset();
     g_cfgMgr.prepareForPlannedRestart("button_factory_reset");
     ESP.restart();
