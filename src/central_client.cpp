@@ -405,6 +405,12 @@ bool CentralClient::postWithFallback(const String& path, const String& authToken
     http.addHeader("Content-Type", "application/json");
     if (!authToken.isEmpty()) http.addHeader("Authorization", "Bearer " + authToken);
 
+    // 0.2.4: feed both watchdogs right before the blocking TLS+POST.
+    // Under low free-heap the BearSSL handshake can take several seconds;
+    // without this, the soft-WDT (default ~3.5s) can fire mid-handshake and
+    // reset the chip with a "Software/System restart" that bypasses our
+    // planned-restart breadcrumb path.
+    ESP.wdtFeed();
     httpCode = http.POST(body);
     responseBody = httpCode > 0 ? http.getString() : "";
     http.end();
@@ -469,6 +475,8 @@ bool CentralClient::postWithoutResponseWithFallback(const String& path, const St
     http.addHeader("Content-Type", "application/json");
     if (!authToken.isEmpty()) http.addHeader("Authorization", "Bearer " + authToken);
 
+    // 0.2.4: see notes in postWithFallback — feed WDT before TLS+POST.
+    ESP.wdtFeed();
     httpCode = http.POST(body);
 
     if (httpCode >= 200 && httpCode < 300) {
@@ -536,6 +544,8 @@ bool CentralClient::getWithFallback(const String& path, const String& authToken,
     }
 
     if (!authToken.isEmpty()) http.addHeader("Authorization", "Bearer " + authToken);
+    // 0.2.4: see notes in postWithFallback — feed WDT before TLS+GET.
+    ESP.wdtFeed();
     httpCode = http.GET();
     responseBody = httpCode > 0 ? http.getString() : "";
     http.end();
