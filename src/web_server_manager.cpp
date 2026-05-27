@@ -1335,6 +1335,10 @@ static void addCentralDiagnostic(JsonObject target, const String& baseUrl) {
     return;
   }
 
+  // 0.2.4: feed both watchdogs before the blocking TLS+GET. Same defensive
+  // pattern as central_client.cpp's HTTPS sites — keeps the soft-WDT from
+  // firing if a slow handshake takes >3.5s under heap pressure.
+  ESP.wdtFeed();
   const int code = http.GET();
   target["https_code"] = code;
   if (code < 0) {
