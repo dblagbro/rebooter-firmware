@@ -126,14 +126,6 @@ void CentralClient::begin(AppConfig* config, RuntimeStatus* status, ConfigManage
   relay_ = relay;
   wifi_ = wifi;
   power_ = power;
-  // 0.2.3: allocate the long-lived BearSSL client now, at fresh-boot heap.
-  // The ~4-8K contiguous session block lives in a stable region for the
-  // device's lifetime instead of being malloc'd/freed for every HTTPS call.
-  if (!tlsClient_) {
-    tlsClient_.reset(new BearSSL::WiFiClientSecure());
-    tlsClient_->setInsecure();
-    tlsClient_->setBufferSizes(512, 512);
-  }
   retryBackoffMs_ = INITIAL_RETRY_DELAY_MS;
   // Already-registered devices do not need to resend the full reported
   // config blob on every boot. That 600s delayed heartbeat has become a
@@ -389,10 +381,15 @@ bool CentralClient::postWithFallback(const String& path, const String& authToken
   String failureSummary;
   for (size_t idx : attemptOrder) {
     const String baseUrl = config_->central.baseUrls[idx];
-    // 0.2.3: reuse the long-lived TLS client (allocated at begin()) to avoid
-    // per-call heap fragmentation. setInsecure/setBufferSizes already applied.
-    if (!tlsClient_) return false;
-    BearSSL::WiFiClientSecure* client = tlsClient_.get();
+    // 0.2.5: per-call BearSSL client. The 0.2.3 long-lived pool was reverted —
+    // it cost ~13K standing heap and leaked ~50-100 B/min (the pinned client
+    // accumulated state across reuses), crashing devices every 15-40 min
+    // regardless of frame flow. Per-call alloc is freed on scope exit
+    // (unique_ptr -> _ctx=nullptr -> _freeSSL), which 8.6h of stable-heap
+    // 0.2.0 runtime on .188 proved leak-free.
+    std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
+    client->setInsecure();
+    client->setBufferSizes(512, 512);
     HTTPClient http;
     const String url = buildApiUrl(baseUrl, path);
     http.setTimeout(4000);
@@ -459,10 +456,15 @@ bool CentralClient::postWithoutResponseWithFallback(const String& path, const St
   String failureSummary;
   for (size_t idx : attemptOrder) {
     const String baseUrl = config_->central.baseUrls[idx];
-    // 0.2.3: reuse the long-lived TLS client (allocated at begin()) to avoid
-    // per-call heap fragmentation. setInsecure/setBufferSizes already applied.
-    if (!tlsClient_) return false;
-    BearSSL::WiFiClientSecure* client = tlsClient_.get();
+    // 0.2.5: per-call BearSSL client. The 0.2.3 long-lived pool was reverted —
+    // it cost ~13K standing heap and leaked ~50-100 B/min (the pinned client
+    // accumulated state across reuses), crashing devices every 15-40 min
+    // regardless of frame flow. Per-call alloc is freed on scope exit
+    // (unique_ptr -> _ctx=nullptr -> _freeSSL), which 8.6h of stable-heap
+    // 0.2.0 runtime on .188 proved leak-free.
+    std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
+    client->setInsecure();
+    client->setBufferSizes(512, 512);
     HTTPClient http;
     const String url = buildApiUrl(baseUrl, path);
     http.setTimeout(4000);
@@ -530,10 +532,15 @@ bool CentralClient::getWithFallback(const String& path, const String& authToken,
   String failureSummary;
   for (size_t idx : attemptOrder) {
     const String baseUrl = config_->central.baseUrls[idx];
-    // 0.2.3: reuse the long-lived TLS client (allocated at begin()) to avoid
-    // per-call heap fragmentation. setInsecure/setBufferSizes already applied.
-    if (!tlsClient_) return false;
-    BearSSL::WiFiClientSecure* client = tlsClient_.get();
+    // 0.2.5: per-call BearSSL client. The 0.2.3 long-lived pool was reverted —
+    // it cost ~13K standing heap and leaked ~50-100 B/min (the pinned client
+    // accumulated state across reuses), crashing devices every 15-40 min
+    // regardless of frame flow. Per-call alloc is freed on scope exit
+    // (unique_ptr -> _ctx=nullptr -> _freeSSL), which 8.6h of stable-heap
+    // 0.2.0 runtime on .188 proved leak-free.
+    std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
+    client->setInsecure();
+    client->setBufferSizes(512, 512);
     HTTPClient http;
     const String url = buildApiUrl(baseUrl, path);
     http.setTimeout(4000);
@@ -965,11 +972,10 @@ bool CentralClient::checkFirmwareAssignment() {
   setState("firmware_updating");
   if (eventLog_) eventLog_->add("firmware", "Applying assigned firmware " + targetVersion + " from " + downloadUrl);
 
-  // 0.2.3: reuse the long-lived TLS client here too. The device reboots at
-  // the end of update anyway, so any session state changes during download
-  // don't outlive this call.
-  if (!tlsClient_) return false;
-  BearSSL::WiFiClientSecure* client = tlsClient_.get();
+  // 0.2.5: per-call BearSSL client (pool reverted — see postWithFallback note).
+  std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
+  client->setInsecure();
+  client->setBufferSizes(512, 512);
   ESPhttpUpdate.rebootOnUpdate(true);
   if (cfgMgr_) cfgMgr_->prepareForPlannedRestart("assigned_firmware_update");
   t_httpUpdate_return ret = ESPhttpUpdate.update(*client, downloadUrl);
