@@ -194,6 +194,14 @@ void fillHeartbeatDocument(JsonDocument& doc, const AppConfig& config,
   doc["mode"] = modeToString(config.currentMode);
   doc["relay_on"] = status ? status->relayOn : true;
   doc["wifi_connected"] = status ? status->wifiConnected : true;
+  // 0.2.7: current-connection RSSI (dBm) so the hub can chart WiFi signal
+  // quality + alert on degradation. Only meaningful while associated;
+  // WiFi.RSSI() returns a sentinel (often 31) when not connected, so emit
+  // it only when connected. Tiny (one int) — included even in compact mode
+  // because constrained units are exactly where signal trouble bites.
+  if (WiFi.isConnected()) {
+    doc["wifi_rssi_dbm"] = WiFi.RSSI();
+  }
   doc["recovery_mode"] = status ? status->recoveryMode : false;
   doc["auto_recovery_triggered"] = status ? status->autoRecoveryTriggered : false;
   doc["last_known_good_restored"] = status ? status->lastKnownGoodRestored : false;

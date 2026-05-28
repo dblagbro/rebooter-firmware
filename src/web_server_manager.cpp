@@ -1538,6 +1538,10 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
       doc["mode"] = modeToString(sConfig->currentMode);
       doc["relay_on"] = sRelay->isOn();
       doc["wifi_connected"] = sStatus->wifiConnected;
+      // 0.2.7: current-connection RSSI (dBm), only when associated.
+      if (WiFi.isConnected()) {
+        doc["wifi_rssi_dbm"] = WiFi.RSSI();
+      }
       doc["in_captive_portal"] = sStatus->inCaptivePortal;
       doc["recovery_mode"] = sStatus->recoveryMode;
       doc["auto_recovery_triggered"] = sStatus->autoRecoveryTriggered;
