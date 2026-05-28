@@ -11,7 +11,18 @@ constexpr uint32_t EVENT_LOG_BOOT_QUIET_PERIOD_MS = 600000UL;
 }
 
 void EventLog::begin(uint16_t maxEntries) {
-  maxEntries_ = max<uint16_t>(25, min<uint16_t>(maxEntries, 100));
+  // 0.2.6: cap hard at 30 (was 100). items_ is a std::vector<EventEntry>
+  // held in RAM for the device's lifetime + reloaded from /events.json at
+  // boot. At the old 100-entry cap a fully-populated log held ~10-16K in
+  // RAM (100 x two heap Strings), which eroded free heap from ~20K fresh
+  // to ~10K — below the ~12-13K BearSSL needs for the hub TLS handshake —
+  // and tipped devices into a hub-unreachable death spiral (confirmed on
+  // .185 2026-05-28; factory-resetting /events.json restored heap to 22K).
+  // The hub is the system-of-record for event history now (full event feed
+  // + device.rebooted events); the device only needs a small recent buffer.
+  // 30 entries caps the held RAM at ~3-5K and shrinks the boot-time
+  // deserializeJson parse spike proportionally.
+  maxEntries_ = max<uint16_t>(15, min<uint16_t>(maxEntries, 30));
   autoPersistAllowedAtMillis_ = millis() + EVENT_LOG_BOOT_QUIET_PERIOD_MS;
   load();
   trimToLimit();
@@ -31,8 +42,12 @@ void EventLog::add(const String& type, const String& message) {
 
   String cleanMessage = message;
   cleanMessage.trim();
-  if (cleanMessage.length() > 160) {
-    cleanMessage = cleanMessage.substring(0, 157) + "...";
+  // 0.2.6: 80-char cap (was 160). Each stored message is a heap String held
+  // in RAM; halving the cap halves the worst-case per-entry footprint. 80
+  // covers the firmware's actual event strings (the longest in-tree is
+  // ~45 chars) with margin.
+  if (cleanMessage.length() > 80) {
+    cleanMessage = cleanMessage.substring(0, 77) + "...";
   }
 
   const uint32_t nowSeconds = millis() / 1000UL;
