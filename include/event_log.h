@@ -24,7 +24,7 @@ private:
   void persist();
 
   const char* logPath_ = "/events.json";
-  uint16_t maxEntries_ = 200;
+  uint16_t maxEntries_ = 30;  // 0.2.6: hard-capped to 30 in begin() — see note there
   uint32_t suppressDuplicateWindowSeconds_ = 120;
   uint32_t nextSeq_ = 1;
   uint32_t bootId_ = 1;
