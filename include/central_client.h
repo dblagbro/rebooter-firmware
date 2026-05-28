@@ -89,14 +89,4 @@ private:
   uint32_t lastCompactHeartbeatLogAtMs_ = 0;
   bool pendingReportedConfig_ = true;
   bool steadyStateScheduled_ = false;
-
-  // 0.2.3: long-lived BearSSL client allocated once at begin() when the heap
-  // is plentiful (~30K+ fresh-boot free). Prior 0.2.x firmware allocated a
-  // new BearSSL::WiFiClientSecure on every HTTPS call — under live CSE7766
-  // frame flow + repeated transport failures this fragments the heap
-  // (~4-8K contiguous needed per session) until allocation throws an
-  // exception. .185 hit this reliably with central+power=true. Reusing one
-  // long-lived client keeps the session memory in a stable region and
-  // eliminates per-call alloc/free churn.
-  std::unique_ptr<BearSSL::WiFiClientSecure> tlsClient_;
 };
