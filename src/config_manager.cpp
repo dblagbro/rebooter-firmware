@@ -182,6 +182,9 @@ static void validateConfig(AppConfig& config) {
   }
   config.wifi.savedNetworks = cleanedNetworks;
   config.wifi.connectTimeoutMs = clampU32(config.wifi.connectTimeoutMs, 5000, 60000);
+  // 0.2.8 (#154): clamp the scan interval to a sane floor (don't let an
+  // operator set a tight interval that scans constantly + churns heap/link).
+  config.wifi.periodicScanIntervalSeconds = clampU32(config.wifi.periodicScanIntervalSeconds, 300, 86400);
 
   for (auto& url : config.central.baseUrls) {
     url.trim();
@@ -272,6 +275,8 @@ static bool loadFromPath(const char* path, AppConfig& out) {
   }
   out.wifi.connectTimeoutMs = doc["wifi"]["connect_timeout_ms"] | out.wifi.connectTimeoutMs;
   out.wifi.preferStrongestKnown = doc["wifi"]["prefer_strongest_known"] | out.wifi.preferStrongestKnown;
+  out.wifi.periodicScanEnabled = doc["wifi"]["periodic_scan_enabled"] | out.wifi.periodicScanEnabled;
+  out.wifi.periodicScanIntervalSeconds = doc["wifi"]["periodic_scan_interval_seconds"] | out.wifi.periodicScanIntervalSeconds;
 
   const String mode = doc["current_mode"] | "smart_plug";
   out.currentMode = modeFromString(mode);
@@ -369,6 +374,8 @@ static void writeConfigDocument(JsonDocument& doc, const AppConfig& clean) {
   }
   doc["wifi"]["connect_timeout_ms"] = clean.wifi.connectTimeoutMs;
   doc["wifi"]["prefer_strongest_known"] = clean.wifi.preferStrongestKnown;
+  doc["wifi"]["periodic_scan_enabled"] = clean.wifi.periodicScanEnabled;
+  doc["wifi"]["periodic_scan_interval_seconds"] = clean.wifi.periodicScanIntervalSeconds;
 
   JsonArray targets = doc["internet"]["targets"].to<JsonArray>();
   for (const auto& t : clean.internet.targets) targets.add(t);

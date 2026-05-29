@@ -308,6 +308,69 @@ void WifiManagerService::clearProvisionedCredentials() {
   provisionedViaPortal_ = false;
 }
 
+namespace {
+// 0.2.8 (#154) periodic-scan tuning.
+constexpr uint32_t PERIODIC_SCAN_HEAP_FLOOR = 18000;   // don't scan when tight
+constexpr uint32_t PERIODIC_SCAN_TIMEOUT_MS = 12000;   // abort a stuck async scan
+constexpr int PERIODIC_SCAN_TOP_N = 5;                 // strongest N reported
+constexpr uint8_t PERIODIC_SCAN_SSID_MAX = 24;         // truncate long SSIDs
+}
+
+void WifiManagerService::loopPeriodicScan(const AppConfig* config, uint32_t freeHeap) {
+  if (!config || !config->wifi.periodicScanEnabled) return;
+  if (state_ != State::Connected) return;  // only scan while associated + stable
+  const uint32_t now = millis();
+
+  if (periodicScanInFlight_) {
+    const int n = WiFi.scanComplete();
+    if (n == WIFI_SCAN_RUNNING) {
+      if (now - periodicScanStartedMs_ > PERIODIC_SCAN_TIMEOUT_MS) {
+        WiFi.scanDelete();
+        periodicScanInFlight_ = false;
+        periodicScanLastRunMs_ = now;  // back off a full interval after a dud
+      }
+      return;
+    }
+    // Scan finished (n >= 0) or failed (WIFI_SCAN_FAILED). Build a compact
+    // top-N-by-RSSI summary; WiFi.scanNetworks already returns descending RSSI.
+    if (n > 0) {
+      String out = "[";
+      const int limit = n < PERIODIC_SCAN_TOP_N ? n : PERIODIC_SCAN_TOP_N;
+      for (int i = 0; i < limit; ++i) {
+        if (i > 0) out += ",";
+        String ssid = WiFi.SSID(i);
+        if (ssid.length() > PERIODIC_SCAN_SSID_MAX) ssid = ssid.substring(0, PERIODIC_SCAN_SSID_MAX);
+        ssid.replace("\\", "\\\\");
+        ssid.replace("\"", "\\\"");
+        out += "{\"ssid\":\"" + ssid + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+      }
+      out += "]";
+      periodicScanSummary_ = out;
+      periodicScanUptimeSeconds_ = now / 1000UL;
+    }
+    WiFi.scanDelete();
+    periodicScanInFlight_ = false;
+    periodicScanLastRunMs_ = now;
+    return;
+  }
+
+  // Idle: time for the next scan? Respect the interval + a heap floor.
+  const uint32_t intervalMs = config->wifi.periodicScanIntervalSeconds * 1000UL;
+  const bool due = (periodicScanLastRunMs_ == 0) || (now - periodicScanLastRunMs_ >= intervalMs);
+  if (!due) return;
+  if (freeHeap < PERIODIC_SCAN_HEAP_FLOOR) {
+    periodicScanLastRunMs_ = now;  // skip this slot, retry next interval
+    return;
+  }
+  // Kick off the non-blocking scan (async=true, show_hidden=false).
+  if (WiFi.scanNetworks(true, false) == WIFI_SCAN_RUNNING) {
+    periodicScanInFlight_ = true;
+    periodicScanStartedMs_ = now;
+  } else {
+    periodicScanLastRunMs_ = now;  // couldn't start; back off
+  }
+}
+
 String WifiManagerService::scanNetworksJson() {
   String out = "[";
   int count = WiFi.scanNetworks();
