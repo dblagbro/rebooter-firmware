@@ -50,6 +50,11 @@ private:
                       String& resultMessage, bool& includeRelayState,
                       bool& relayState, bool& shouldRestart,
                       String& restartReason);
+  // #170 / 0.2.11: execute a commands array delivered either via the
+  // /device/commands poll or piggybacked on the heartbeat response.
+  // Returns count of commands processed; ESP.restart()s mid-iteration
+  // if any command sets shouldRestart=true.
+  size_t processCommandsArray(JsonArray commands, const String& sourceLabel);
   void persistRelayState();
   String effectiveAlias() const;
   void setState(const String& state);
@@ -89,6 +94,20 @@ private:
   uint32_t lastCompactHeartbeatLogAtMs_ = 0;
   bool pendingReportedConfig_ = true;
   bool steadyStateScheduled_ = false;
+
+  // #170 / 0.2.13: pending-commands JSON captured from a heartbeat
+  // response, deferred to a later loop tick. 0.2.12 (reverted) tried
+  // to execute commands INSIDE the heartbeat-response handler — but
+  // postCommandResult inside that scope nests a second BearSSL ~12K
+  // alloc while the heartbeat's JsonDoc + body String + response
+  // String + res JsonDoc (with trajectory + power summary) are still
+  // alive on the heap. That doubled peak heap pressure and fragmented
+  // .190 from 22K→10K mfb within one heartbeat cycle, ghost-rebooting
+  // it every ~150s vs 1h+ on per-call BearSSL alone. Deferral lets
+  // the heartbeat fully exit (all its String+JsonDoc state freed)
+  // before postCommandResult fires. Bounded — only ever holds the
+  // most recent heartbeat's pending list; new arrivals overwrite.
+  String pendingCommandsJson_;
 
   // 0.2.10: heap-trajectory ring. Sampled every HEAP_SAMPLE_INTERVAL_MS in
   // loop(), flushed into the heartbeat JSON as heap_trajectory: [...].
