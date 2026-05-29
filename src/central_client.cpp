@@ -18,11 +18,17 @@ namespace {
 static constexpr uint32_t INITIAL_RETRY_DELAY_MS = 30000;
 static constexpr uint32_t MAX_RETRY_DELAY_MS = 300000;
 static constexpr uint32_t MAX_ANNOUNCE_RETRY_DELAY_MS = 60000;
-static constexpr uint32_t FIRMWARE_CHECK_INTERVAL_MS = 900000;
+// 0.2.9: bumped from 15min→60min. The firmware-check HTTPS call is the
+// biggest contiguous BearSSL allocation (~12K), and on 0.2.7 we saw devices
+// SDK-restart with empty last_planned_restart_reason after hours of uptime —
+// consistent with heap fragmentation eventually failing a BearSSL alloc
+// inside the SDK. Cutting this poll 4x lowers fragmentation pressure while
+// we hunt the root-cause leaker (see project_rebooter_pause_state).
+static constexpr uint32_t FIRMWARE_CHECK_INTERVAL_MS = 3600000;
 static constexpr uint32_t CENTRAL_ACTION_SPACING_MS = 1500;
 static constexpr uint32_t INITIAL_HEARTBEAT_DELAY_MS = 2000;
 static constexpr uint32_t INITIAL_POLL_DELAY_MS = 5000;
-static constexpr uint32_t INITIAL_FIRMWARE_CHECK_DELAY_MS = 900000;
+static constexpr uint32_t INITIAL_FIRMWARE_CHECK_DELAY_MS = 3600000;
 static constexpr int HTTP_BEGIN_FAILED = -1000;
 static constexpr uint32_t MIN_SUCCESS_RETRY_DELAY_MS = 30000;
 static constexpr uint32_t REGISTERED_NO_TOKEN_RETRY_DELAY_MS = 300000;

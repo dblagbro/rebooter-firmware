@@ -1571,6 +1571,8 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
       doc["time_synced"] = sStatus->timeSynced;
       doc["wall_clock_unix_ms"] = sStatus->wallClockUnixMs;
       doc["free_heap"] = ESP.getFreeHeap();
+      doc["max_free_block"] = ESP.getMaxFreeBlockSize();
+      doc["heap_fragmentation_pct"] = ESP.getHeapFragmentation();
       doc["incident_cycles"] = sStatus->currentIncidentCycles;
       doc["hour_cycles"] = sStatus->currentHourCycles;
       doc["holdoff_remaining_seconds"] = sStatus->holdoffRemainingSeconds;
