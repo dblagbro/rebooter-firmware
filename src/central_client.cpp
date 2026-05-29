@@ -810,6 +810,18 @@ bool CentralClient::sendHeartbeat() {
     JsonObject data = res["data"];
     config_->central.pollIntervalSeconds = data["next_poll_after_seconds"] | config_->central.pollIntervalSeconds;
     config_->central.heartbeatIntervalSeconds = data["next_heartbeat_after_seconds"] | config_->central.heartbeatIntervalSeconds;
+    // #170 / 0.2.13: command piggyback (deferred). Capture the
+    // pending_commands array as a raw JSON string. We CANNOT execute
+    // here because postCommandResult would nest another BearSSL
+    // handshake inside this heartbeat's stack (doc + body + response +
+    // res still live → peak heap exceeds budget → severe fragmentation).
+    // Instead we hand it to the loop() tick that follows, which fires
+    // after sendHeartbeat() fully returns and all its locals are freed.
+    JsonArray commands = data["pending_commands"].as<JsonArray>();
+    if (!commands.isNull() && commands.size() > 0) {
+      pendingCommandsJson_ = "";
+      serializeJson(commands, pendingCommandsJson_);
+    }
   }
 
   if (status_) status_->centralLastHeartbeatSeconds = millis() / 1000;
@@ -870,6 +882,17 @@ bool CentralClient::pollCommands() {
   }
 
   JsonArray commands = res["data"]["commands"].as<JsonArray>();
+  size_t count = processCommandsArray(commands, "poll via " + selectedBaseUrl);
+  if (count == 0) {
+    setState("idle");
+  } else {
+    setState("commands_received");
+  }
+  markSuccess();
+  return true;
+}
+
+size_t CentralClient::processCommandsArray(JsonArray commands, const String& sourceLabel) {
   size_t count = 0;
   for (JsonObject cmd : commands) {
     count++;
@@ -897,15 +920,10 @@ bool CentralClient::pollCommands() {
       ESP.restart();
     }
   }
-
-  if (count == 0) {
-    setState("idle");
-  } else {
-    if (eventLog_) eventLog_->add("central", "Command poll returned " + String(count) + " command(s) via " + selectedBaseUrl);
-    setState("commands_received");
+  if (count > 0 && eventLog_) {
+    eventLog_->add("central", "Processed " + String(count) + " command(s) via " + sourceLabel);
   }
-  markSuccess();
-  return true;
+  return count;
 }
 
 void CentralClient::persistRelayState() {
@@ -1273,6 +1291,25 @@ void CentralClient::loop() {
   if (!config_ || !status_) return;
 
   sampleHeap();
+
+  // #170 / 0.2.13: drain any deferred commands captured by the previous
+  // heartbeat. By the time we re-enter loop() the heartbeat function
+  // has fully returned and every one of its local JsonDocuments and
+  // Strings has been freed, so postCommandResult's BearSSL handshake
+  // now runs against a clean heap instead of nesting inside a still-
+  // live heartbeat scope. Move the string into a local first so that
+  // any nested ESP.restart() from a command doesn't leave stale data
+  // for the next boot to re-execute.
+  if (!pendingCommandsJson_.isEmpty()) {
+    String pending = pendingCommandsJson_;
+    pendingCommandsJson_ = "";
+    JsonDocument doc;
+    if (deserializeJson(doc, pending) == DeserializationError::Ok) {
+      processCommandsArray(doc.as<JsonArray>(), "heartbeat (deferred)");
+    } else if (eventLog_) {
+      eventLog_->add("central_command", "Failed to parse deferred pending_commands JSON");
+    }
+  }
 
   status_->centralEnabled = config_->central.enabled;
   status_->centralRegistered = !config_->central.deviceId.isEmpty() && !config_->central.deviceToken.isEmpty();
