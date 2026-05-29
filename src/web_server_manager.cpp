@@ -1437,6 +1437,8 @@ static void sendConfigJson(bool includeProtectedFields = false) {
   }
   doc["wifi"]["connect_timeout_ms"] = sConfig->wifi.connectTimeoutMs;
   doc["wifi"]["prefer_strongest_known"] = sConfig->wifi.preferStrongestKnown;
+  doc["wifi"]["periodic_scan_enabled"] = sConfig->wifi.periodicScanEnabled;
+  doc["wifi"]["periodic_scan_interval_seconds"] = sConfig->wifi.periodicScanIntervalSeconds;
 
   JsonArray targets = doc["internet"]["targets"].to<JsonArray>();
   for (const auto& target : sConfig->internet.targets) targets.add(target);
@@ -1541,6 +1543,19 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
       // 0.2.7: current-connection RSSI (dBm), only when associated.
       if (WiFi.isConnected()) {
         doc["wifi_rssi_dbm"] = WiFi.RSSI();
+      }
+      // 0.2.8 (#154): latest opt-in periodic nearby-network scan (top-N),
+      // for local verification + parity with the heartbeat. Present only
+      // when the feature is on + a summary has been captured.
+      {
+        const String& scan = sWifi->latestScanSummary();
+        if (scan.length() > 2) {
+          JsonDocument scanDoc;
+          if (deserializeJson(scanDoc, scan) == DeserializationError::Ok) {
+            doc["wifi_scan"] = scanDoc;
+            doc["wifi_scan_uptime_seconds"] = sWifi->latestScanUptimeSeconds();
+          }
+        }
       }
       doc["in_captive_portal"] = sStatus->inCaptivePortal;
       doc["recovery_mode"] = sStatus->recoveryMode;
@@ -1761,6 +1776,8 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
       }
       sConfig->wifi.connectTimeoutMs = doc["wifi"]["connect_timeout_ms"] | sConfig->wifi.connectTimeoutMs;
       sConfig->wifi.preferStrongestKnown = doc["wifi"]["prefer_strongest_known"] | sConfig->wifi.preferStrongestKnown;
+      sConfig->wifi.periodicScanEnabled = doc["wifi"]["periodic_scan_enabled"] | sConfig->wifi.periodicScanEnabled;
+      sConfig->wifi.periodicScanIntervalSeconds = doc["wifi"]["periodic_scan_interval_seconds"] | sConfig->wifi.periodicScanIntervalSeconds;
     }
 
     if (doc["internet"]["targets"].is<JsonArray>()) {

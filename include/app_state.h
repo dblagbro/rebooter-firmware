@@ -69,6 +69,11 @@ struct RuntimeStatus {
   String setupApName = "";
   String resetReason = "";
   String lastPlannedRestartReason = "";
+  // 0.2.8 (#154): latest opt-in periodic nearby-network scan, mirrored from
+  // WifiManagerService so the heartbeat builder can read it. Empty unless
+  // wifi.periodicScanEnabled. Compact "[{ssid,rssi}]" + the uptime it was taken.
+  String wifiScanSummary = "";
+  uint32_t wifiScanUptimeSeconds = 0;
   bool inHoldoff = false;
   bool inCooldown = false;
   HealthState healthState = HealthState::Unknown;

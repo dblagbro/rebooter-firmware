@@ -41,6 +41,17 @@ public:
   // action.
   String scanNetworksJson();
 
+  // 0.2.8 (#154): opt-in periodic *async* nearby-network scan. Drives a
+  // non-blocking scan state machine (no main-loop stall / WDT risk) gated on
+  // config flag + a heap floor; stashes a compact top-N summary the heartbeat
+  // can carry. Call every loop. `freeHeap` is passed in so the manager
+  // doesn't kick off a scan when memory is tight (the scan itself allocates).
+  void loopPeriodicScan(const AppConfig* config, uint32_t freeHeap);
+  // Compact JSON array of the most recent periodic scan's top networks
+  // (`[{"ssid","rssi"}]`), or "" if none captured yet / stale. Cheap copy.
+  const String& latestScanSummary() const { return periodicScanSummary_; }
+  uint32_t latestScanUptimeSeconds() const { return periodicScanUptimeSeconds_; }
+
 private:
   struct Candidate {
     String ssid;
@@ -64,4 +75,11 @@ private:
   uint32_t connectTimeoutMs_ = 15000;
   uint32_t lastLinkOkMs_ = 0;
   uint32_t nextReconnectAttemptMs_ = 0;
+
+  // 0.2.8 (#154) periodic async-scan state.
+  bool periodicScanInFlight_ = false;
+  uint32_t periodicScanStartedMs_ = 0;       // for the async-scan timeout guard
+  uint32_t periodicScanLastRunMs_ = 0;       // throttles to the configured interval
+  uint32_t periodicScanUptimeSeconds_ = 0;   // when the last summary was captured
+  String periodicScanSummary_;               // compact "[{ssid,rssi}]" top-N
 };

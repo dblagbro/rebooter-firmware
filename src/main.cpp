@@ -194,6 +194,14 @@ void loop() {
   g_status.uptimeSeconds = millis() / 1000;
 
   g_wifi.loop();
+  // 0.2.8 (#154): opt-in non-blocking periodic nearby-network scan. No-op
+  // unless wifi.periodicScanEnabled; heap-guarded inside. Mirror the latest
+  // summary into status so the heartbeat builder can carry it.
+  g_wifi.loopPeriodicScan(&g_config, ESP.getFreeHeap());
+  if (g_config.wifi.periodicScanEnabled) {
+    g_status.wifiScanSummary = g_wifi.latestScanSummary();
+    g_status.wifiScanUptimeSeconds = g_wifi.latestScanUptimeSeconds();
+  }
   g_button.loop();
   g_led.loop();
   g_web.loop();

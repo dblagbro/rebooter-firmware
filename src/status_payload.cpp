@@ -202,6 +202,16 @@ void fillHeartbeatDocument(JsonDocument& doc, const AppConfig& config,
   if (WiFi.isConnected()) {
     doc["wifi_rssi_dbm"] = WiFi.RSSI();
   }
+  // 0.2.8 (#154): opt-in periodic nearby-network scan (top-N). Only present
+  // when the feature is on AND a summary has been captured — zero bytes for
+  // the default-off fleet. Nest the captured array so the hub gets real JSON.
+  if (status && status->wifiScanSummary.length() > 2) {
+    JsonDocument scanDoc;
+    if (deserializeJson(scanDoc, status->wifiScanSummary) == DeserializationError::Ok) {
+      doc["wifi_scan"] = scanDoc;
+      doc["wifi_scan_uptime_seconds"] = status->wifiScanUptimeSeconds;
+    }
+  }
   doc["recovery_mode"] = status ? status->recoveryMode : false;
   doc["auto_recovery_triggered"] = status ? status->autoRecoveryTriggered : false;
   doc["last_known_good_restored"] = status ? status->lastKnownGoodRestored : false;

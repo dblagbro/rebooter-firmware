@@ -85,6 +85,14 @@ struct WifiConfig {
   std::vector<WifiNetwork> savedNetworks;   // user-managed, max 5
   uint32_t connectTimeoutMs = 15000;        // per-network attempt budget
   bool preferStrongestKnown = false;        // optional scan-first ordering
+  // 0.2.8 (#154): opt-in periodic nearby-network scan for RF-environment
+  // diagnostics. OFF by default — an async scan still allocates + briefly
+  // perturbs the link, so it stays opt-in like mDNS. When on, the manager
+  // runs a non-blocking scan at most every `periodicScanIntervalSeconds`
+  // (and only above a heap floor) and stashes a compact top-N summary the
+  // heartbeat carries.
+  bool periodicScanEnabled = false;
+  uint32_t periodicScanIntervalSeconds = 1800;  // 30 min default
 };
 
 struct PowerAnalyticsConfig {
