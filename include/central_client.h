@@ -89,4 +89,23 @@ private:
   uint32_t lastCompactHeartbeatLogAtMs_ = 0;
   bool pendingReportedConfig_ = true;
   bool steadyStateScheduled_ = false;
+
+  // 0.2.10: heap-trajectory ring. Sampled every HEAP_SAMPLE_INTERVAL_MS in
+  // loop(), flushed into the heartbeat JSON as heap_trajectory: [...].
+  // Streams 5s-resolution heap data to the hub via the existing HTTPS call,
+  // so fragmentation creep is visible even when free_heap stays flat.
+  struct HeapSample {
+    uint32_t uptime_s;
+    uint16_t free_heap;
+    uint16_t max_free_block;
+    uint8_t frag_pct;
+  };
+  static constexpr size_t HEAP_RING_SIZE = 12;
+  static constexpr uint32_t HEAP_SAMPLE_INTERVAL_MS = 5000;
+  HeapSample heapRing_[HEAP_RING_SIZE];
+  uint8_t heapRingHead_ = 0;
+  uint8_t heapRingCount_ = 0;
+  uint32_t lastHeapSampleAtMs_ = 0;
+  void sampleHeap();
+  void serializeHeapTrajectory(JsonDocument& doc) const;
 };
