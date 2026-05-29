@@ -210,6 +210,33 @@ bool CentralClient::shouldUseCompactHeartbeat() const {
   return ESP.getFreeHeap() < COMPACT_HEARTBEAT_FREE_HEAP_THRESHOLD;
 }
 
+void CentralClient::sampleHeap() {
+  const uint32_t now = millis();
+  if (lastHeapSampleAtMs_ != 0 && now - lastHeapSampleAtMs_ < HEAP_SAMPLE_INTERVAL_MS) return;
+  lastHeapSampleAtMs_ = now;
+  HeapSample& s = heapRing_[heapRingHead_];
+  s.uptime_s = status_ ? status_->uptimeSeconds : (now / 1000UL);
+  s.free_heap = static_cast<uint16_t>(min<uint32_t>(ESP.getFreeHeap(), 65535));
+  s.max_free_block = static_cast<uint16_t>(min<uint32_t>(ESP.getMaxFreeBlockSize(), 65535));
+  s.frag_pct = static_cast<uint8_t>(min<uint32_t>(ESP.getHeapFragmentation(), 255));
+  heapRingHead_ = (heapRingHead_ + 1) % HEAP_RING_SIZE;
+  if (heapRingCount_ < HEAP_RING_SIZE) heapRingCount_++;
+}
+
+void CentralClient::serializeHeapTrajectory(JsonDocument& doc) const {
+  if (heapRingCount_ == 0) return;
+  JsonArray arr = doc["heap_trajectory"].to<JsonArray>();
+  const uint8_t start = (heapRingHead_ + HEAP_RING_SIZE - heapRingCount_) % HEAP_RING_SIZE;
+  for (uint8_t i = 0; i < heapRingCount_; ++i) {
+    const HeapSample& s = heapRing_[(start + i) % HEAP_RING_SIZE];
+    JsonObject e = arr.add<JsonObject>();
+    e["up"] = s.uptime_s;
+    e["fh"] = s.free_heap;
+    e["mfb"] = s.max_free_block;
+    e["fp"] = s.frag_pct;
+  }
+}
+
 String CentralClient::buildApiUrl(const String& baseUrl, const String& path) const {
   String root = baseUrl;
   if (root.endsWith("/")) root.remove(root.length() - 1);
@@ -735,6 +762,11 @@ bool CentralClient::sendHeartbeat() {
   JsonDocument doc;
   StatusPayload::fillHeartbeatDocument(doc, *config_, status_, FIRMWARE_VERSION,
                                        includeReportedConfig, compactHeartbeat);
+  // 0.2.10: flush the heap-trajectory ring into the heartbeat envelope.
+  // Adds ~30 bytes/sample × up to 12 samples = ~360 bytes when full —
+  // negligible vs the existing heartbeat body. Skipped when compact-mode
+  // is active so a low-heap unit doesn't grow its own payload.
+  if (!compactHeartbeat) serializeHeapTrajectory(doc);
 
   String body;
   serializeJson(doc, body);
@@ -1239,6 +1271,8 @@ bool CentralClient::executeCommand(const JsonObject& cmd, String& resultStatus,
 
 void CentralClient::loop() {
   if (!config_ || !status_) return;
+
+  sampleHeap();
 
   status_->centralEnabled = config_->central.enabled;
   status_->centralRegistered = !config_->central.deviceId.isEmpty() && !config_->central.deviceToken.isEmpty();

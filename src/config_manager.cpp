@@ -529,11 +529,21 @@ BootHealthSnapshot ConfigManager::beginBootSession(const String& currentFirmware
   StoredBootState state = loadBootStateRecord();
   BootHealthSnapshot snapshot;
 
+  // #164 / 0.2.10: surface the planned-restart-reason any time the prior
+  // boot set one — independent of bootInProgress. Pre-fix the reason was
+  // ONLY read in the `bootInProgress` branch (crashed-mid-boot path), so
+  // every reboot from a healthy prior boot lost the reason silently. That
+  // made our own OTA / API / button reboots indistinguishable from ghost
+  // SDK system_restart()s in the heartbeat — masking the real diagnostic
+  // signal for the entire heap-fragmentation investigation.
+  if (state.plannedRestart) {
+    snapshot.previousBootPlannedRestart = true;
+    snapshot.previousPlannedRestartReason = state.plannedRestartReason;
+  }
+
   if (state.bootInProgress) {
     snapshot.previousBootIncomplete = true;
     if (state.plannedRestart) {
-      snapshot.previousBootPlannedRestart = true;
-      snapshot.previousPlannedRestartReason = state.plannedRestartReason;
       state.consecutiveUnhealthyBoots = 0;
     } else if (!state.lastFirmwareVersion.isEmpty() &&
         !currentFirmwareVersion.isEmpty() &&
