@@ -95,6 +95,21 @@ private:
   bool pendingReportedConfig_ = true;
   bool steadyStateScheduled_ = false;
 
+  // #172 / 0.2.14: proactive planned-restart when sustained heap
+  // pressure crosses a safe threshold. Per-call BearSSL `_sc` is
+  // a ~5-7K shared_ptr re-allocated on every connect (verified by
+  // reading WiFiClientSecureBearSSL.cpp _connectSSL/_freeSSL), so
+  // a client-object pool wouldn't avoid the dominant allocation
+  // churn — the right defence is to convert unpredictable ghost
+  // reboots into clean planned ones BEFORE BearSSL fails, with a
+  // proper breadcrumb. Track consecutive low-mfb samples; once over
+  // the debounce window AND past min-uptime, prepareForPlannedRestart
+  // + ESP.restart() with reason=heap_pressure_proactive. Counter
+  // resets the moment mfb recovers.
+  uint8_t heapPressureSampleCount_ = 0;
+  uint32_t lastHeapPressureCheckMs_ = 0;
+  void maybeHeapPressureRestart();
+
   // #170 / 0.2.13: pending-commands JSON captured from a heartbeat
   // response, deferred to a later loop tick. 0.2.12 (reverted) tried
   // to execute commands INSIDE the heartbeat-response handler — but
