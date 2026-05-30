@@ -240,6 +240,14 @@ void CentralClient::maybeHeapPressureRestart() {
   if (heapPressureSampleCount_ < 255) heapPressureSampleCount_++;
   if (heapPressureSampleCount_ < HEAP_PRESSURE_DEBOUNCE_SAMPLES) return;
 
+  // #172 follow-up: don't restart while a command is mid-flight. A
+  // queued or just-delivered command would still execute after the
+  // restart (the hub queue is idempotent), but interrupting an active
+  // toggle is operator-visible churn. The 30s debounce is long enough
+  // that we'll re-check next iteration and fire then once the queue
+  // drains.
+  if (!pendingCommandsJson_.isEmpty()) return;
+
   // Sustained pressure — fire a clean planned restart with breadcrumb.
   Serial.print("Heap-pressure proactive restart: mfb=");
   Serial.print(mfb);
