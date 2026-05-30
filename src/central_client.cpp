@@ -33,6 +33,17 @@ static constexpr int HTTP_BEGIN_FAILED = -1000;
 static constexpr uint32_t MIN_SUCCESS_RETRY_DELAY_MS = 30000;
 static constexpr uint32_t REGISTERED_NO_TOKEN_RETRY_DELAY_MS = 300000;
 static constexpr uint32_t TRANSPORT_FAILURE_LOG_INTERVAL_MS = 120000;
+// #172 / 0.2.14: proactive planned-restart thresholds. mfb is the largest
+// contiguous free block — BearSSL needs ~5-7K contiguous for _sc and
+// failure inside the SDK presents as system_restart_local() (ghost reboot
+// with empty restart reason) or REASON_EXCEPTION_RST (.185 at 23:17:31
+// UTC). Restart proactively once mfb stays below the threshold for the
+// debounce window AND the device has been up long enough that we're sure
+// we're not bouncing on startup pressure. Both conditions must hold.
+static constexpr uint16_t HEAP_PRESSURE_MFB_THRESHOLD = 8000;
+static constexpr uint8_t HEAP_PRESSURE_DEBOUNCE_SAMPLES = 6;  // 6 samples * 5s = 30s sustained
+static constexpr uint32_t HEAP_PRESSURE_CHECK_INTERVAL_MS = 5000;
+static constexpr uint32_t HEAP_PRESSURE_MIN_UPTIME_S = 1800;  // don't fire in the first 30min
 static constexpr uint32_t TRANSPORT_FAILURE_SLOT_DELAY_MS = 10000;
 static constexpr uint32_t TRANSPORT_FAILURE_FIRMWARE_FLOOR_MS = 120000;
 static constexpr uint32_t REPORTED_CONFIG_STARTUP_DELAY_SECONDS = 600;
@@ -208,6 +219,42 @@ bool CentralClient::shouldIncludeReportedConfig(uint32_t now) const {
 
 bool CentralClient::shouldUseCompactHeartbeat() const {
   return ESP.getFreeHeap() < COMPACT_HEARTBEAT_FREE_HEAP_THRESHOLD;
+}
+
+void CentralClient::maybeHeapPressureRestart() {
+  if (!status_ || !cfgMgr_) return;
+  const uint32_t now = millis();
+  if (now - lastHeapPressureCheckMs_ < HEAP_PRESSURE_CHECK_INTERVAL_MS) return;
+  lastHeapPressureCheckMs_ = now;
+
+  // Don't bounce during startup or recovery — give the device room to
+  // settle and let an operator clear a stuck state without us looping.
+  if (status_->uptimeSeconds < HEAP_PRESSURE_MIN_UPTIME_S) return;
+  if (status_->recoveryMode) return;
+
+  const uint32_t mfb = ESP.getMaxFreeBlockSize();
+  if (mfb >= HEAP_PRESSURE_MFB_THRESHOLD) {
+    heapPressureSampleCount_ = 0;
+    return;
+  }
+  if (heapPressureSampleCount_ < 255) heapPressureSampleCount_++;
+  if (heapPressureSampleCount_ < HEAP_PRESSURE_DEBOUNCE_SAMPLES) return;
+
+  // Sustained pressure — fire a clean planned restart with breadcrumb.
+  Serial.print("Heap-pressure proactive restart: mfb=");
+  Serial.print(mfb);
+  Serial.print(" sustained for ");
+  Serial.print(heapPressureSampleCount_ * HEAP_PRESSURE_CHECK_INTERVAL_MS / 1000);
+  Serial.println("s");
+  if (eventLog_) {
+    eventLog_->add("system",
+                   "Proactive restart: mfb=" + String(mfb) +
+                       " below threshold, uptime=" + String(status_->uptimeSeconds) + "s");
+    eventLog_->flush();
+  }
+  cfgMgr_->prepareForPlannedRestart("heap_pressure_proactive");
+  delay(200);
+  ESP.restart();
 }
 
 void CentralClient::sampleHeap() {
@@ -1291,6 +1338,7 @@ void CentralClient::loop() {
   if (!config_ || !status_) return;
 
   sampleHeap();
+  maybeHeapPressureRestart();
 
   // #170 / 0.2.13: drain any deferred commands captured by the previous
   // heartbeat. By the time we re-enter loop() the heartbeat function
