@@ -331,10 +331,17 @@ void WifiManagerService::loopPeriodicScan(const AppConfig* config, uint32_t free
       }
       return;
     }
-    // Scan finished (n >= 0) or failed (WIFI_SCAN_FAILED). Build a compact
-    // top-N-by-RSSI summary; WiFi.scanNetworks already returns descending RSSI.
+    // 0.2.16 review fix #14: pre-allocate the buffer so the per-entry
+    // += doesn't realloc 5+ times. 256 bytes covers 5 entries × ~45B at
+    // SSID_MAX=24, with slack. Same anti-pattern that 0.2.6 fixed in the
+    // event log — String allocator churn was the original heap-erosion bug.
+    // 0.2.16 review fix #15: also write the summary on n==0 (or scan
+    // failed). Pre-fix the device kept emitting the prior top-N forever
+    // with no way to distinguish "scan ran-and-was-empty" from "feature off".
+    String out;
+    out.reserve(256);
+    out = "[";
     if (n > 0) {
-      String out = "[";
       const int limit = n < PERIODIC_SCAN_TOP_N ? n : PERIODIC_SCAN_TOP_N;
       for (int i = 0; i < limit; ++i) {
         if (i > 0) out += ",";
@@ -344,10 +351,10 @@ void WifiManagerService::loopPeriodicScan(const AppConfig* config, uint32_t free
         ssid.replace("\"", "\\\"");
         out += "{\"ssid\":\"" + ssid + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
       }
-      out += "]";
-      periodicScanSummary_ = out;
-      periodicScanUptimeSeconds_ = now / 1000UL;
     }
+    out += "]";
+    periodicScanSummary_ = out;
+    periodicScanUptimeSeconds_ = now / 1000UL;
     WiFi.scanDelete();
     periodicScanInFlight_ = false;
     periodicScanLastRunMs_ = now;

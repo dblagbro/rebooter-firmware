@@ -237,16 +237,17 @@ void CentralClient::maybeHeapPressureRestart() {
     heapPressureSampleCount_ = 0;
     return;
   }
-  if (heapPressureSampleCount_ < 255) heapPressureSampleCount_++;
-  if (heapPressureSampleCount_ < HEAP_PRESSURE_DEBOUNCE_SAMPLES) return;
-
-  // #172 follow-up: don't restart while a command is mid-flight. A
-  // queued or just-delivered command would still execute after the
-  // restart (the hub queue is idempotent), but interrupting an active
-  // toggle is operator-visible churn. The 30s debounce is long enough
-  // that we'll re-check next iteration and fire then once the queue
-  // drains.
-  if (!pendingCommandsJson_.isEmpty()) return;
+  if (heapPressureSampleCount_ < HEAP_PRESSURE_DEBOUNCE_SAMPLES) {
+    heapPressureSampleCount_++;
+    return;
+  }
+  // 0.2.16 review fix #6: dropped the `if (!pendingCommandsJson_.isEmpty()) return`
+  // guard. loop() ordering called this BEFORE the deferred-drain block, so the
+  // check saw stale data from the previous iteration. With the drain now
+  // re-ordered to run first, the buffer is already empty by the time we get
+  // here in the common case. And even if it isn't: the hub queue is idempotent,
+  // a command re-delivered after the restart still executes correctly, and
+  // silently suppressing the safety net was the more dangerous failure mode.
 
   // Sustained pressure — fire a clean planned restart with breadcrumb.
   Serial.print("Heap-pressure proactive restart: mfb=");
@@ -261,7 +262,11 @@ void CentralClient::maybeHeapPressureRestart() {
     eventLog_->flush();
   }
   cfgMgr_->prepareForPlannedRestart("heap_pressure_proactive");
-  delay(200);
+  // 0.2.16 review fix #13: bumped 200ms → 500ms so eventLog_->flush()
+  // and the planned-restart-reason persistence both have time to commit
+  // to LittleFS. Losing the breadcrumb turns a clean planned restart
+  // back into a ghost on the hub side, defeating the whole point of #172.
+  delay(500);
   ESP.restart();
 }
 
@@ -819,9 +824,14 @@ bool CentralClient::sendHeartbeat() {
                                        includeReportedConfig, compactHeartbeat);
   // 0.2.10: flush the heap-trajectory ring into the heartbeat envelope.
   // Adds ~30 bytes/sample × up to 12 samples = ~360 bytes when full —
-  // negligible vs the existing heartbeat body. Skipped when compact-mode
-  // is active so a low-heap unit doesn't grow its own payload.
-  if (!compactHeartbeat) serializeHeapTrajectory(doc);
+  // negligible vs the existing heartbeat body.
+  // 0.2.16 review fix #10: do this even in compact mode. Compact mode
+  // triggers precisely when free_heap is low (≤20K) — exactly the
+  // regime where fragmentation forensics matter most. The hub's
+  // live-detail panel reads heap fields ONLY from heap_trajectory[-1],
+  // so skipping the array in compact mode left devices invisible on
+  // the dashboard at the moment they needed surfacing.
+  serializeHeapTrajectory(doc);
 
   String body;
   serializeJson(doc, body);
@@ -1346,26 +1356,13 @@ void CentralClient::loop() {
   if (!config_ || !status_) return;
 
   sampleHeap();
+  // 0.2.16 review fix #6: maybeHeapPressureRestart MUST run on every
+  // tick regardless of central state — fragmentation creeps during
+  // WiFi-down or boot-warmup too, so we can't gate it on the guards
+  // below. The in-flight `pendingCommandsJson_` check that was here
+  // before is gone (see comment in the function body) so ordering is
+  // no longer load-bearing for correctness.
   maybeHeapPressureRestart();
-
-  // #170 / 0.2.13: drain any deferred commands captured by the previous
-  // heartbeat. By the time we re-enter loop() the heartbeat function
-  // has fully returned and every one of its local JsonDocuments and
-  // Strings has been freed, so postCommandResult's BearSSL handshake
-  // now runs against a clean heap instead of nesting inside a still-
-  // live heartbeat scope. Move the string into a local first so that
-  // any nested ESP.restart() from a command doesn't leave stale data
-  // for the next boot to re-execute.
-  if (!pendingCommandsJson_.isEmpty()) {
-    String pending = pendingCommandsJson_;
-    pendingCommandsJson_ = "";
-    JsonDocument doc;
-    if (deserializeJson(doc, pending) == DeserializationError::Ok) {
-      processCommandsArray(doc.as<JsonArray>(), "heartbeat (deferred)");
-    } else if (eventLog_) {
-      eventLog_->add("central_command", "Failed to parse deferred pending_commands JSON");
-    }
-  }
 
   status_->centralEnabled = config_->central.enabled;
   status_->centralRegistered = !config_->central.deviceId.isEmpty() && !config_->central.deviceToken.isEmpty();
@@ -1384,6 +1381,33 @@ void CentralClient::loop() {
   if (!status_->bootHealthyMarked) {
     setState("boot_warmup");
     return;
+  }
+
+  // 0.2.16 review fix #5: drain deferred piggybacked commands AFTER the
+  // recoveryMode / central.enabled / bootHealthy guards. Pre-fix this
+  // block ran first, which meant a recovery-mode device would still
+  // execute (and HTTPS-post results for) the prior heartbeat's queued
+  // commands, undermining the recovery-mode contract. The heap-nesting
+  // reason for deferral (heartbeat's JsonDoc/String state still alive)
+  // is unchanged — drain still runs ONE loop tick after sendHeartbeat
+  // returned, so all that state has been freed.
+  if (!pendingCommandsJson_.isEmpty()) {
+    String pending = pendingCommandsJson_;
+    pendingCommandsJson_ = "";
+    JsonDocument doc;
+    if (deserializeJson(doc, pending) == DeserializationError::Ok) {
+      // 0.2.16 review fix #8: align with pollCommands() — set the
+      // transport state and refresh the success-bookkeeping so
+      // central_state advances and retry-backoff acks the working
+      // channel. Pre-fix the deferred path skipped both, so a device
+      // whose commands only ever arrived via piggyback reported
+      // central_state='heartbeat_ok' forever.
+      const size_t n = processCommandsArray(doc.as<JsonArray>(), "heartbeat (deferred)");
+      setState(n > 0 ? "commands_received" : "idle");
+      markSuccess();
+    } else if (eventLog_) {
+      eventLog_->add("central_command", "Failed to parse deferred pending_commands JSON");
+    }
   }
 
   if (WiFi.status() != WL_CONNECTED) {
