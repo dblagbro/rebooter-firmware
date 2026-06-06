@@ -44,6 +44,10 @@ static constexpr uint16_t HEAP_PRESSURE_MFB_THRESHOLD = 8000;
 static constexpr uint8_t HEAP_PRESSURE_DEBOUNCE_SAMPLES = 6;  // 6 samples * 5s = 30s sustained
 static constexpr uint32_t HEAP_PRESSURE_CHECK_INTERVAL_MS = 5000;
 static constexpr uint32_t HEAP_PRESSURE_MIN_UPTIME_S = 1800;  // don't fire in the first 30min
+// 0.2.17 sweep S6: heap samples taken within this window after an HTTPS
+// call returns are biased by the BearSSL buffer's transient post-alloc
+// state and are skipped to avoid false-positive heap-pressure trips.
+static constexpr uint32_t HTTPS_SETTLE_WINDOW_MS = 1500;
 static constexpr uint32_t TRANSPORT_FAILURE_SLOT_DELAY_MS = 10000;
 static constexpr uint32_t TRANSPORT_FAILURE_FIRMWARE_FLOOR_MS = 120000;
 static constexpr uint32_t REPORTED_CONFIG_STARTUP_DELAY_SECONDS = 600;
@@ -273,6 +277,15 @@ void CentralClient::maybeHeapPressureRestart() {
 void CentralClient::sampleHeap() {
   const uint32_t now = millis();
   if (lastHeapSampleAtMs_ != 0 && now - lastHeapSampleAtMs_ < HEAP_SAMPLE_INTERVAL_MS) return;
+  // 0.2.17 sweep S6: skip sampling inside the post-HTTPS settle window.
+  // During the ~12K BearSSL handshake, ESP.getMaxFreeBlockSize() reports
+  // the transient post-alloc value, not the steady-state baseline. If
+  // the heap-pressure debounce (6 samples) catches us on a burst of
+  // HTTPS calls — one sample per loop tick right after each return —
+  // it would falsely trip the proactive restart on devices whose
+  // BASELINE mfb is healthy. lastHttpsCompletedAtMs_ is bumped by
+  // postWithFallback/getWithFallback when they finish.
+  if (lastHttpsCompletedAtMs_ != 0 && now - lastHttpsCompletedAtMs_ < HTTPS_SETTLE_WINDOW_MS) return;
   lastHeapSampleAtMs_ = now;
   HeapSample& s = heapRing_[heapRingHead_];
   s.uptime_s = status_ ? status_->uptimeSeconds : (now / 1000UL);
@@ -283,7 +296,7 @@ void CentralClient::sampleHeap() {
   if (heapRingCount_ < HEAP_RING_SIZE) heapRingCount_++;
 }
 
-void CentralClient::serializeHeapTrajectory(JsonDocument& doc) const {
+void CentralClient::serializeHeapTrajectory(JsonDocument& doc) {
   if (heapRingCount_ == 0) return;
   JsonArray arr = doc["heap_trajectory"].to<JsonArray>();
   const uint8_t start = (heapRingHead_ + HEAP_RING_SIZE - heapRingCount_) % HEAP_RING_SIZE;
@@ -295,6 +308,15 @@ void CentralClient::serializeHeapTrajectory(JsonDocument& doc) const {
     e["mfb"] = s.max_free_block;
     e["fp"] = s.frag_pct;
   }
+  // 0.2.17 sweep S8: reset the ring after flushing. Without this, the
+  // 12-slot × 5s ring fills in ~60s — the same cadence as heartbeats —
+  // so the next heartbeat re-ships up to all 12 samples it already
+  // shipped (different received_at, same `up` values). Hub stored each
+  // sample 2-3x and any chart that flattens trajectories by `up` showed
+  // duplicate points. New samples are appended from the head; next
+  // heartbeat ships only what was captured in the intervening window.
+  heapRingCount_ = 0;
+  heapRingHead_ = 0;
 }
 
 String CentralClient::buildApiUrl(const String& baseUrl, const String& path) const {
@@ -471,6 +493,13 @@ bool CentralClient::postWithFallback(const String& path, const String& authToken
   const std::vector<size_t> attemptOrder = buildAttemptOrder();
   if (attemptOrder.empty()) return false;
 
+  // 0.2.17 sweep S6: stamp the HTTPS-settle window at call-START. loop()
+  // doesn't tick during the blocking http.POST so the next sampleHeap
+  // fires only after we return; the window then covers ~1.5s of settle
+  // for the BearSSL teardown so the captured mfb reflects baseline,
+  // not the transient post-handshake low.
+  lastHttpsCompletedAtMs_ = millis();
+
   String failureSummary;
   for (size_t idx : attemptOrder) {
     const String baseUrl = config_->central.baseUrls[idx];
@@ -545,6 +574,7 @@ bool CentralClient::postWithoutResponseWithFallback(const String& path, const St
   if (!config_) return false;
   const std::vector<size_t> attemptOrder = buildAttemptOrder();
   if (attemptOrder.empty()) return false;
+  lastHttpsCompletedAtMs_ = millis();  // 0.2.17 sweep S6: see postWithFallback
 
   String failureSummary;
   for (size_t idx : attemptOrder) {
@@ -621,6 +651,7 @@ bool CentralClient::getWithFallback(const String& path, const String& authToken,
   if (!config_) return false;
   const std::vector<size_t> attemptOrder = buildAttemptOrder();
   if (attemptOrder.empty()) return false;
+  lastHttpsCompletedAtMs_ = millis();  // 0.2.17 sweep S6: see postWithFallback
 
   String failureSummary;
   for (size_t idx : attemptOrder) {
@@ -1098,9 +1129,18 @@ bool CentralClient::checkFirmwareAssignment() {
   client->setInsecure();
   client->setBufferSizes(512, 512);
   ESPhttpUpdate.rebootOnUpdate(true);
+  // 0.2.17 sweep S5: prepareForPlannedRestart MUST fire before update()
+  // because ESPhttpUpdate.update() with rebootOnUpdate(true) calls
+  // ESP.restart() internally on success — no code after a successful
+  // return executes. But on HTTP_UPDATE_FAILED or HTTP_UPDATE_NO_UPDATES
+  // the flag stays set on a device that never restarts, and after the
+  // 0.2.10 #164 fix surfaces the reason on every next boot, the device
+  // misattributes its next ghost reboot as 'assigned_firmware_update'.
+  // Clear on each non-success exit.
   if (cfgMgr_) cfgMgr_->prepareForPlannedRestart("assigned_firmware_update");
   t_httpUpdate_return ret = ESPhttpUpdate.update(*client, downloadUrl);
   if (ret == HTTP_UPDATE_FAILED) {
+    if (cfgMgr_) cfgMgr_->clearPlannedRestart();
     const String message = ESPhttpUpdate.getLastErrorString();
     if (eventLog_) eventLog_->add("firmware", "Assigned firmware update failed: " + message);
     setState("firmware_update_failed");
@@ -1108,6 +1148,7 @@ bool CentralClient::checkFirmwareAssignment() {
   }
 
   if (ret == HTTP_UPDATE_NO_UPDATES) {
+    if (cfgMgr_) cfgMgr_->clearPlannedRestart();
     if (eventLog_) eventLog_->add("firmware", "Assigned firmware reports no update: " + targetVersion);
     setState("firmware_no_update");
     return true;

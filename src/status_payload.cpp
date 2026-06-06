@@ -202,10 +202,15 @@ void fillHeartbeatDocument(JsonDocument& doc, const AppConfig& config,
   if (WiFi.isConnected()) {
     doc["wifi_rssi_dbm"] = WiFi.RSSI();
   }
-  // 0.2.8 (#154): opt-in periodic nearby-network scan (top-N). Only present
-  // when the feature is on AND a summary has been captured — zero bytes for
-  // the default-off fleet. Nest the captured array so the hub gets real JSON.
-  if (status && status->wifiScanSummary.length() > 2) {
+  // 0.2.8 (#154): opt-in periodic nearby-network scan (top-N). Present
+  // when the feature is on AND a scan has been attempted — including
+  // empty-result scans (n==0 / WIFI_SCAN_FAILED), which write "[]" to
+  // signal "I ran a scan and saw nothing". The pre-0.2.17 guard
+  // `length() > 2` rejected exactly that "[]" payload, so the hub kept
+  // the stale prior summary forever (0.6.18 review sweep S4). The new
+  // condition emits any non-empty captured summary; "" still means
+  // "feature was never turned on", which we suppress.
+  if (status && !status->wifiScanSummary.isEmpty()) {
     JsonDocument scanDoc;
     if (deserializeJson(scanDoc, status->wifiScanSummary) == DeserializationError::Ok) {
       doc["wifi_scan"] = scanDoc;
