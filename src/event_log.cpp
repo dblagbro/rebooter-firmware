@@ -123,6 +123,24 @@ void EventLog::load() {
     entry.type = String((const char*)(item["type"] | "event"));
     entry.message = String((const char*)(item["message"] | ""));
     if (entry.message.isEmpty()) continue;
+    // 0.2.18 sweep / .185 corruption fix: drop entries whose message or
+    // type contains non-printable / non-ASCII bytes. The .185 file
+    // round-tripped a corrupt String ("Heartbeat transport fail\x25P\x03\xe0")
+    // forever because the outer JSON still parsed — but no firmware event
+    // string contains anything outside printable ASCII. Treat such an
+    // entry as a write-tear or memory-stomp artifact and skip it; the
+    // first clean persist after this load rewrites a sanitized file.
+    auto isPrintableAscii = [](const String& s) {
+      for (size_t i = 0; i < s.length(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x20 || c > 0x7E) return false;
+      }
+      return true;
+    };
+    if (!isPrintableAscii(entry.type) || !isPrintableAscii(entry.message)) {
+      migratedLegacyEntries = true;  // ensure a clean persist on next flush
+      continue;
+    }
     if (entry.seq == 0) {
       entry.seq = items_.empty() ? 1 : (items_.back().seq + 1);
       migratedLegacyEntries = true;
@@ -135,6 +153,7 @@ void EventLog::load() {
     items_.push_back(entry);
   }
   if (migratedLegacyEntries) {
+    dirty_ = true;
     persist();
   }
 }
@@ -177,8 +196,25 @@ void EventLog::persist() {
     o["message"] = item.message;
   }
 
-  File f = LittleFS.open(logPath_, "w");
+  // 0.2.18 sweep / .185 corruption fix: atomic temp + rename. Pre-fix the
+  // file was opened in-place with "w" (truncate); a reboot mid-serialize
+  // (Hardware WDT, power glitch, ESP.restart racing the flash driver) left
+  // /events.json half-written. .185 returned a 3583-byte file whose last
+  // entry had `"message":"Heartbeat transport fail\x25P\x03\xe0"` — a
+  // string truncated mid-write then padded with stale flash bytes. The
+  // outer JSON still parsed, so the corrupt entry round-tripped every
+  // load+persist cycle indefinitely. Writing to .tmp first keeps the
+  // prior known-good file intact until a complete new one exists.
+  const String tmpPath = String(logPath_) + ".tmp";
+  if (LittleFS.exists(tmpPath)) LittleFS.remove(tmpPath);
+  File f = LittleFS.open(tmpPath, "w");
   if (!f) return;
-  serializeJson(doc, f);
+  const size_t written = serializeJson(doc, f);
   f.close();
+  if (written == 0) {
+    LittleFS.remove(tmpPath);
+    return;
+  }
+  if (LittleFS.exists(logPath_)) LittleFS.remove(logPath_);
+  LittleFS.rename(tmpPath, logPath_);
 }
