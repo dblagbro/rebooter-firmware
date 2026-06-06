@@ -21,6 +21,7 @@ public:
   BootHealthSnapshot beginBootSession(const String& currentFirmwareVersion);
   bool markBootHealthy();
   bool prepareForPlannedRestart(const String& reason = "");
+  bool clearPlannedRestart();
   bool requestRecoveryBoot();
   bool consumeRecoveryBootRequest();
 private:

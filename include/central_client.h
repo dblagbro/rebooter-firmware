@@ -140,6 +140,12 @@ private:
   uint8_t heapRingHead_ = 0;
   uint8_t heapRingCount_ = 0;
   uint32_t lastHeapSampleAtMs_ = 0;
+  // 0.2.17 sweep S6: stamped by postWithFallback / getWithFallback when
+  // an HTTPS call finishes, so sampleHeap skips the immediate
+  // post-handshake settle window (transient BearSSL buffer state would
+  // dip the captured mfb below baseline and bias the proactive-restart
+  // decision).
+  uint32_t lastHttpsCompletedAtMs_ = 0;
   void sampleHeap();
-  void serializeHeapTrajectory(JsonDocument& doc) const;
+  void serializeHeapTrajectory(JsonDocument& doc);
 };

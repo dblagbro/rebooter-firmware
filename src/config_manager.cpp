@@ -581,6 +581,18 @@ bool ConfigManager::markBootHealthy() {
   return saveBootStateRecord(state);
 }
 
+bool ConfigManager::clearPlannedRestart() {
+  // 0.2.17 sweep S5: invoked when a code path that set plannedRestart=true
+  // ended up NOT restarting (e.g. ESPhttpUpdate.update() returned
+  // HTTP_UPDATE_FAILED). Without this clear, the stale flag would
+  // misattribute the next UNRELATED ghost reboot to whatever reason was
+  // staged — defeating the diagnostic value of the 0.2.10 #164 fix.
+  StoredBootState state = loadBootStateRecord();
+  state.plannedRestart = false;
+  state.plannedRestartReason = "";
+  return saveBootStateRecord(state);
+}
+
 bool ConfigManager::prepareForPlannedRestart(const String& reason) {
   StoredBootState state = loadBootStateRecord();
   state.consecutiveUnhealthyBoots = 0;

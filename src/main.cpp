@@ -197,10 +197,16 @@ void loop() {
   // 0.2.8 (#154): opt-in non-blocking periodic nearby-network scan. No-op
   // unless wifi.periodicScanEnabled; heap-guarded inside. Mirror the latest
   // summary into status so the heartbeat builder can carry it.
+  // 0.2.17 sweep S3: also CLEAR the mirror when the feature is off, so a
+  // device that captured a scan and then had the feature disabled stops
+  // shipping the stale snapshot in every heartbeat forever.
   g_wifi.loopPeriodicScan(&g_config, ESP.getFreeHeap());
   if (g_config.wifi.periodicScanEnabled) {
     g_status.wifiScanSummary = g_wifi.latestScanSummary();
     g_status.wifiScanUptimeSeconds = g_wifi.latestScanUptimeSeconds();
+  } else if (g_status.wifiScanSummary.length() > 0) {
+    g_status.wifiScanSummary = "";
+    g_status.wifiScanUptimeSeconds = 0;
   }
   g_button.loop();
   g_led.loop();
