@@ -50,11 +50,25 @@ static bool saveBootStateRecord(const StoredBootState& state) {
   doc["last_firmware_version"] = state.lastFirmwareVersion;
   doc["planned_restart_reason"] = state.plannedRestartReason;
 
-  File file = LittleFS.open(BOOT_STATE_PATH, "w");
+  // 0.2.19: atomic temp+rename mirror of the event_log fix shipped in
+  // 0.2.18. Pre-fix this opened /bootstate.json in "w" (truncate) — a
+  // reboot mid-serialize (Hardware WDT, brown-out, ESP.restart racing
+  // the flash driver) left a half-written file that loadBootStateRecord
+  // would either drop or mis-parse, sending the device into a wrong
+  // recovery branch on the next boot. The atomic dance keeps the prior
+  // known-good content intact until a complete new one exists.
+  const String tmpPath = String(BOOT_STATE_PATH) + ".tmp";
+  if (LittleFS.exists(tmpPath)) LittleFS.remove(tmpPath);
+  File file = LittleFS.open(tmpPath, "w");
   if (!file) return false;
-  serializeJson(doc, file);
+  const size_t written = serializeJson(doc, file);
   file.close();
-  return true;
+  if (written == 0) {
+    LittleFS.remove(tmpPath);
+    return false;
+  }
+  if (LittleFS.exists(BOOT_STATE_PATH)) LittleFS.remove(BOOT_STATE_PATH);
+  return LittleFS.rename(tmpPath, BOOT_STATE_PATH);
 }
 
 static uint32_t clampU32(uint32_t value, uint32_t minValue, uint32_t maxValue) {
