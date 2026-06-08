@@ -19,6 +19,7 @@
 #include "power_monitor.h"
 #include "time_sync_manager.h"
 #include "crash_recorder.h"
+#include "pre_crash_breadcrumb.h"
 #include "discovery_manager.h"
 #include "firmware_version.h"
 
@@ -103,6 +104,11 @@ void setup() {
   // Convert any RTC crash record left by custom_crash_callback into a
   // LittleFS crash file. Done in normal-boot context where allocation is safe.
   const bool crashCaptured = CrashRecorder::processPendingCrash();
+  // 0.2.22 (#183): if the previous boot ended mid-operation (Hardware
+  // WDT, SDK system_restart, anything that bypasses the user-level
+  // crash_callback), this surfaces which operation was in flight.
+  PreCrashBreadcrumb::processPending(
+      [](const char* type, const String& msg) { g_eventLog.add(type, msg); });
   g_status.lastCrashPresent = CrashRecorder::hasStoredCrash();
   g_status.lastCrashReason = CrashRecorder::lastCrashReason();
   g_cfgMgr.begin();

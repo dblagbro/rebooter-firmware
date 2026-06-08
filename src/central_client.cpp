@@ -10,6 +10,7 @@
 #include "event_log.h"
 #include "firmware_version.h"
 #include "power_monitor.h"
+#include "pre_crash_breadcrumb.h"
 #include "relay_controller.h"
 #include "status_payload.h"
 #include "wifi_manager.h"
@@ -40,7 +41,11 @@ static constexpr uint32_t TRANSPORT_FAILURE_LOG_INTERVAL_MS = 120000;
 // UTC). Restart proactively once mfb stays below the threshold for the
 // debounce window AND the device has been up long enough that we're sure
 // we're not bouncing on startup pressure. Both conditions must hold.
-static constexpr uint16_t HEAP_PRESSURE_MFB_THRESHOLD = 8000;
+// 0.2.22: raised from 8000 → 13000. Per 06-08 fleet snapshot .185 was
+// holding steady at mfb≈13.5K — well above 8K so it never tripped, but
+// uncomfortably close to the ~12K BearSSL handshake floor. A proactive
+// restart at 13K gives us margin before the next handshake starves.
+static constexpr uint16_t HEAP_PRESSURE_MFB_THRESHOLD = 13000;
 static constexpr uint8_t HEAP_PRESSURE_DEBOUNCE_SAMPLES = 6;  // 6 samples * 5s = 30s sustained
 static constexpr uint32_t HEAP_PRESSURE_CHECK_INTERVAL_MS = 5000;
 static constexpr uint32_t HEAP_PRESSURE_MIN_UPTIME_S = 1800;  // don't fire in the first 30min
@@ -326,6 +331,7 @@ String CentralClient::buildApiUrl(const String& baseUrl, const String& path) con
 }
 
 bool CentralClient::announceDevice() {
+  PreCrashBreadcrumb::Scope _bc(PreCrashBreadcrumb::OP_HTTPS_ANNOUNCE);
   if (!config_ || !cfgMgr_) return false;
 
   if (!status_ || status_->centralState != "registered_no_token") {
@@ -716,6 +722,7 @@ bool CentralClient::getWithFallback(const String& path, const String& authToken,
 }
 
 bool CentralClient::registerDevice() {
+  PreCrashBreadcrumb::Scope _bc(PreCrashBreadcrumb::OP_HTTPS_REGISTER);
   if (!config_ || !cfgMgr_) return false;
   if (config_->central.enrollmentToken.isEmpty()) {
     setState("missing_enrollment_token");
@@ -838,6 +845,7 @@ bool CentralClient::registerDevice() {
 }
 
 bool CentralClient::sendHeartbeat() {
+  PreCrashBreadcrumb::Scope _bc(PreCrashBreadcrumb::OP_HTTPS_HEARTBEAT);
   if (!config_ || config_->central.deviceId.isEmpty() || config_->central.deviceToken.isEmpty()) return false;
 
   setState("heartbeat");
@@ -931,6 +939,7 @@ bool CentralClient::sendHeartbeat() {
 }
 
 bool CentralClient::pollCommands() {
+  PreCrashBreadcrumb::Scope _bc(PreCrashBreadcrumb::OP_HTTPS_FETCH_COMMANDS);
   if (!config_ || config_->central.deviceId.isEmpty() || config_->central.deviceToken.isEmpty()) return false;
 
   setState("polling");
@@ -1032,6 +1041,7 @@ void CentralClient::persistRelayState() {
 bool CentralClient::postCommandResult(const String& commandId, const String& status,
                                       const String& message, bool includeRelayState,
                                       bool relayState) {
+  PreCrashBreadcrumb::Scope _bc(PreCrashBreadcrumb::OP_HTTPS_POST_RESULT);
   if (!config_ || config_->central.deviceId.isEmpty() || config_->central.deviceToken.isEmpty() || commandId.isEmpty()) {
     return false;
   }
