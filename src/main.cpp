@@ -161,6 +161,15 @@ void setup() {
   g_led.begin();
   g_button.begin();
 
+  // 0.2.19 (#197): emit the saved-WiFi-network count to the event log
+  // on every boot. The .185 06-06 cascade lost its credentials silently —
+  // the device kept rebooting and eventually fell into setup-AP mode
+  // without any log entry naming the trigger. With this breadcrumb in
+  // place a future loss will show a clear "WiFi networks loaded: 0"
+  // line and we can correlate against any preceding factory-reset
+  // breadcrumb (or its absence — which would point at LittleFS
+  // corruption again).
+  g_eventLog.add("boot", "WiFi networks loaded: " + String(g_config.wifi.savedNetworks.size()));
   g_wifi.begin(g_config.deviceName, &g_config, explicitRecoveryRequested);
   if (g_wifi.configChangedByPortal()) {
     g_cfgMgr.save(g_config);

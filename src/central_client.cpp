@@ -1227,6 +1227,17 @@ bool CentralClient::executeCommand(const JsonObject& cmd, String& resultStatus,
 
   if (type == "factory_reset") {
     includeRelayState = false;
+    // 0.2.19 (#197): leave a permanent breadcrumb BEFORE clearing WiFi.
+    // The button + API paths already log; this hub-command path didn't —
+    // so a forensic look at /api/events couldn't distinguish "operator
+    // ran factory_reset from the hub" from "WiFi creds vanished from
+    // LittleFS corruption" (the .185 06-06 case). With the breadcrumb
+    // in place, the next time creds disappear without a matching log
+    // entry, we know it was corruption, not a user-initiated reset.
+    if (eventLog_) {
+      eventLog_->add("system", "Factory reset requested by hub command");
+      eventLog_->flush();
+    }
     if (wifi_) {
       wifi_->clearProvisionedCredentials();
     }
