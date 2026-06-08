@@ -20,6 +20,7 @@
 #include "time_sync_manager.h"
 #include "crash_recorder.h"
 #include "pre_crash_breadcrumb.h"
+#include "udp_control.h"
 #include "discovery_manager.h"
 #include "firmware_version.h"
 
@@ -200,6 +201,11 @@ void setup() {
   g_ota.begin(&g_eventLog);
   g_auth.begin(&g_config, &g_eventLog);
   g_central.begin(&g_config, &g_status, &g_cfgMgr, &g_eventLog, &g_relay, &g_wifi, &g_power);
+  // 0.2.23 (#179) Phase 3: UDP control listener on port 31416. Same
+  // shared secret as the central HTTPS path (deviceToken), no separate
+  // provisioning. Idempotent — no-op if WiFi isn't up yet (the socket
+  // bind will succeed once the stack is ready).
+  UdpControl::begin(&g_relay, &g_eventLog, g_config.central.deviceToken);
   g_discovery.begin(&g_config, &g_status);
   g_web.begin(&g_config, &g_status, &g_relay, &g_cfgMgr, &g_eventLog, &g_monitor, &g_ota, &g_auth, &g_wifi, &g_power, &g_discovery);
   g_timeSync.begin(&g_status);
@@ -245,6 +251,7 @@ void loop() {
   }
 
   g_central.loop();
+  UdpControl::loop();  // 0.2.23 (#179): drain UDP control packets
   g_discovery.loop();
 
   g_status.wifiConnected = g_wifi.isConnected();
