@@ -161,26 +161,25 @@ void setup() {
   g_led.begin();
   g_button.begin();
 
-  // 0.2.19 (#197): emit both the operator-configured network count AND
-  // the WifiManager-library provisioned SSID to the event log on every
-  // boot. The .185 06-06 cascade lost its credentials silently — the
-  // device kept rebooting and eventually fell into setup-AP mode without
-  // any log entry naming the trigger. With this breadcrumb in place
-  // a future loss will show e.g. "WiFi provisioned SSID: <empty>" and
-  // we can correlate against any preceding factory-reset breadcrumb
-  // (or its absence — which would point at WifiManager flash storage
-  // being wiped non-administratively).
+  g_wifi.begin(g_config.deviceName, &g_config, explicitRecoveryRequested);
+  if (g_wifi.configChangedByPortal()) {
+    g_cfgMgr.save(g_config);
+    g_eventLog.add("wifi", "Saved Wi-Fi/hub settings entered via setup portal");
+  }
+  // 0.2.21 (#197): WiFi-state breadcrumb. After g_wifi.begin() so
+  // WiFi.SSID() reflects the actually-attempted credentials (pre-fix
+  // it always read as <empty> because the WiFi stack hadn't started
+  // yet). A future silent loss will surface as
+  //   "WiFi state: provisioned_ssid=<empty> operator_networks=0"
+  // — without a matching factory-reset breadcrumb earlier in the log,
+  // that's the smoking gun for WifiManager flash storage being wiped
+  // non-administratively (the .185 06-06 hypothesis).
   {
     const String provisioned = WiFi.SSID();
     g_eventLog.add("boot",
         "WiFi state: provisioned_ssid=" +
         (provisioned.isEmpty() ? String("<empty>") : provisioned) +
         " operator_networks=" + String(g_config.wifi.savedNetworks.size()));
-  }
-  g_wifi.begin(g_config.deviceName, &g_config, explicitRecoveryRequested);
-  if (g_wifi.configChangedByPortal()) {
-    g_cfgMgr.save(g_config);
-    g_eventLog.add("wifi", "Saved Wi-Fi/hub settings entered via setup portal");
   }
   if (explicitRecoveryRequested && g_wifi.provisionedViaPortal()) {
     g_eventLog.add("boot", "Recovery provisioning completed; rebooting into normal mode");
