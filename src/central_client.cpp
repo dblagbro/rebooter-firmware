@@ -276,11 +276,24 @@ void CentralClient::maybeHeapPressureRestart() {
     eventLog_->flush();
   }
   cfgMgr_->prepareForPlannedRestart("heap_pressure_proactive");
-  // 0.2.16 review fix #13: bumped 200ms → 500ms so eventLog_->flush()
-  // and the planned-restart-reason persistence both have time to commit
-  // to LittleFS. Losing the breadcrumb turns a clean planned restart
-  // back into a ghost on the hub side, defeating the whole point of #172.
-  delay(500);
+  // 0.2.26 CRITICAL fix (code review F6): pre-fix `delay(500)` yielded
+  // to the SYS task while we were waiting for flash commit. Under the
+  // exact heap pressure that triggered the restart, lwIP RX / BearSSL
+  // background could `alloc-fail → REASON_EXCEPTION_RST` inside the
+  // delay window — the safety net was producing more ghost reboots
+  // than it prevented. .188 saw 8 Exception-class reboots / hr on
+  // 0.2.23-0.2.25 sitting downstream of this code path.
+  //
+  // Tight busy-wait keeps the CPU on this thread (no SYS yield) while
+  // feeding both watchdogs so the device doesn't WDT-reset mid-wait.
+  // 500ms is preserved as the budget because LittleFS metadata commits
+  // are technically async at the flash-driver layer; pre-empting the
+  // settle window can leave the planned-restart breadcrumb un-persisted.
+  const uint32_t restartStart = millis();
+  while (millis() - restartStart < 500) {
+    ESP.wdtFeed();
+    delayMicroseconds(1000);  // busy-wait, no scheduler yield
+  }
   ESP.restart();
 }
 
