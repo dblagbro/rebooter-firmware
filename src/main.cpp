@@ -207,18 +207,20 @@ void setup() {
   // provisioning. Idempotent — no-op if WiFi isn't up yet (the socket
   // bind will succeed once the stack is ready).
   UdpControl::begin(&g_relay, &g_eventLog, g_config.central.deviceToken);
-  // 0.2.27 #206: diagnostic UDP syslog. Hardcoded collector IP =
-  // 192.168.18.1 (LAN gateway = hub host); hardcoded port 51514
-  // matches the hub-side listener in app/services/diag_syslog_collector.py.
-  // Hardcoded for this diagnostic build — if we keep the harness past
-  // the .185 root-cause investigation, move to a runtime_setting.
+  // 0.2.28 #206: diagnostic UDP syslog. Hardcoded collector IP =
+  // 192.168.18.11 (the rebooter-droids hub host's LAN address on
+  // tmrwww01 — NOT .1 which is the LAN gateway/router). Hardcoded
+  // port 51514 matches the hub-side listener in app/services/
+  // diag_syslog_collector.py. Hardcoded for this diagnostic build —
+  // if we keep the harness past the .185 root-cause investigation,
+  // move to a runtime_setting.
   {
     uint8_t macBytes[6] = {0};
     WiFi.macAddress(macBytes);
     char macHex[13];
     snprintf(macHex, sizeof(macHex), "%02x%02x%02x%02x%02x%02x",
              macBytes[0], macBytes[1], macBytes[2], macBytes[3], macBytes[4], macBytes[5]);
-    DiagSyslog::begin(IPAddress(192, 168, 18, 1), 51514, String(macHex));
+    DiagSyslog::begin(IPAddress(192, 168, 18, 11), 51514, String(macHex));
     // Send the boot's reset_reason immediately so we don't miss it if
     // the device dies before the first heap-snapshot interval fires.
     DiagSyslog::sendResetReason(g_status.resetReason);
