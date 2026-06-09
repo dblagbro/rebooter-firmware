@@ -21,6 +21,7 @@
 #include "crash_recorder.h"
 #include "pre_crash_breadcrumb.h"
 #include "udp_control.h"
+#include "diag_syslog.h"
 #include "discovery_manager.h"
 #include "firmware_version.h"
 
@@ -206,6 +207,23 @@ void setup() {
   // provisioning. Idempotent — no-op if WiFi isn't up yet (the socket
   // bind will succeed once the stack is ready).
   UdpControl::begin(&g_relay, &g_eventLog, g_config.central.deviceToken);
+  // 0.2.27 #206: diagnostic UDP syslog. Hardcoded collector IP =
+  // 192.168.18.1 (LAN gateway = hub host); hardcoded port 51514
+  // matches the hub-side listener in app/services/diag_syslog_collector.py.
+  // Hardcoded for this diagnostic build — if we keep the harness past
+  // the .185 root-cause investigation, move to a runtime_setting.
+  {
+    uint8_t macBytes[6] = {0};
+    WiFi.macAddress(macBytes);
+    char macHex[13];
+    snprintf(macHex, sizeof(macHex), "%02x%02x%02x%02x%02x%02x",
+             macBytes[0], macBytes[1], macBytes[2], macBytes[3], macBytes[4], macBytes[5]);
+    DiagSyslog::begin(IPAddress(192, 168, 18, 1), 51514, String(macHex));
+    // Send the boot's reset_reason immediately so we don't miss it if
+    // the device dies before the first heap-snapshot interval fires.
+    DiagSyslog::sendResetReason(g_status.resetReason);
+    DiagSyslog::sendWifiState("boot_wifi_state", "post-begin");
+  }
   g_discovery.begin(&g_config, &g_status);
   g_web.begin(&g_config, &g_status, &g_relay, &g_cfgMgr, &g_eventLog, &g_monitor, &g_ota, &g_auth, &g_wifi, &g_power, &g_discovery);
   g_timeSync.begin(&g_status);
@@ -252,6 +270,7 @@ void loop() {
 
   g_central.loop();
   UdpControl::loop();  // 0.2.23 (#179): drain UDP control packets
+  DiagSyslog::loop();  // 0.2.27 (#206): periodic heap snapshot to diag
   g_discovery.loop();
 
   g_status.wifiConnected = g_wifi.isConnected();

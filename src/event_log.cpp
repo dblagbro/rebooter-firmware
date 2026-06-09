@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include "diag_syslog.h"
 #include "event_log.h"
 
 namespace {
@@ -35,6 +36,9 @@ void EventLog::begin(uint16_t maxEntries) {
 }
 
 void EventLog::add(const String& type, const String& message) {
+  // 0.2.27 #206: tap every event into the diag UDP syslog. No-op when
+  // the syslog isn't configured. Fire-and-forget — never blocks.
+  DiagSyslog::sendEvent(type, message);
   String cleanType = type;
   cleanType.trim();
   if (cleanType.isEmpty()) cleanType = "event";
