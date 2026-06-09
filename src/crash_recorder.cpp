@@ -126,7 +126,10 @@ extern "C" void custom_crash_callback(struct rst_info* resetInfo,
   rec.fwVersionHash = CrashRecorder::firmwareVersionHash();
 
   uint32_t depth = 0;
-  for (uint32_t addr = stackStart; addr < stackEnd && depth < 32; addr += 4) {
+  // 0.2.25 CRITICAL fix: stack capacity reduced from 32 → 20 to make the
+  // record fit in the 512-byte RTC user memory budget (see crash_recorder.h
+  // note). The walking loop bound must match the array size.
+  for (uint32_t addr = stackStart; addr < stackEnd && depth < 20; addr += 4) {
     rec.stack[depth++] = *reinterpret_cast<uint32_t*>(addr);
   }
   rec.stackDepth = depth;

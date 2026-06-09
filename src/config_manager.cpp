@@ -20,6 +20,17 @@ struct StoredBootState {
 
 static StoredBootState loadBootStateRecord() {
   StoredBootState state;
+  // 0.2.25 CRITICAL fix (code review F3): adopt-by-rename if a prior
+  // reboot crashed in saveBootStateRecord's remove/rename window. Pre-fix,
+  // a crash inside the save lost consecutiveUnhealthyBoots and defeated
+  // the AUTO_RECOVERY_BOOT_THRESHOLD trigger — a device crashing repeatedly
+  // inside the save window could never enter recovery mode.
+  const String tmpPath = String(BOOT_STATE_PATH) + ".tmp";
+  if (!LittleFS.exists(BOOT_STATE_PATH) && LittleFS.exists(tmpPath)) {
+    LittleFS.rename(tmpPath, BOOT_STATE_PATH);
+  } else if (LittleFS.exists(tmpPath)) {
+    LittleFS.remove(tmpPath);
+  }
   File file = LittleFS.open(BOOT_STATE_PATH, "r");
   if (!file) return state;
 
@@ -480,7 +491,18 @@ bool ConfigManager::begin() {
 }
 
 bool ConfigManager::load(AppConfig& out) {
+  // 0.2.25 CRITICAL fix (code review F4): if a power loss landed in the
+  // save() window (remove(configPath_) → rename(tmp, configPath_)), the
+  // primary path is missing but the still-intact LAST_KNOWN_GOOD is on
+  // disk. Pre-fix this hit the !exists branch and clobbered LKG with
+  // freshly-defaulted config — the recovery path became the bug-
+  // amplification path (wrong WiFi creds, wrong hub URL, device can't
+  // even phone home).
   if (!LittleFS.exists(configPath_)) {
+    if (LittleFS.exists(LAST_KNOWN_GOOD_PATH) && loadFromPath(LAST_KNOWN_GOOD_PATH, out)) {
+      save(out);  // re-promote LKG → primary atomically
+      return true;
+    }
     setDefaultTargets(out);
     validateConfig(out);
     return save(out);

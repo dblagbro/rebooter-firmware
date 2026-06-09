@@ -91,7 +91,21 @@ void EventLog::trimToLimit() {
 
 void EventLog::load() {
   items_.clear();
-  if (!LittleFS.exists(logPath_)) return;
+  // 0.2.25 CRITICAL fix (code review F2): if a reboot landed in the
+  // narrow window between persist()'s remove(logPath_) and
+  // rename(tmp, logPath_), only the .tmp survives. Pre-fix `load()`
+  // only checked logPath_, so the next persist() truncated tmp and
+  // we lost the entire event log — exactly around the very crash we
+  // wanted to investigate. Adopt-by-rename on boot before anything
+  // else.
+  const String tmpPath = String(logPath_) + ".tmp";
+  if (!LittleFS.exists(logPath_) && LittleFS.exists(tmpPath)) {
+    LittleFS.rename(tmpPath, logPath_);
+  }
+  if (!LittleFS.exists(logPath_)) {
+    if (LittleFS.exists(tmpPath)) LittleFS.remove(tmpPath);  // stale empty tmp
+    return;
+  }
 
   File f = LittleFS.open(logPath_, "r");
   if (!f) return;

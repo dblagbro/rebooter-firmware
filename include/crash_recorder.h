@@ -13,6 +13,15 @@
 
 // Fixed RTC record layout. Kept word-aligned because ESP.rtcUserMemory*
 // operates on 32-bit words.
+//
+// 0.2.25 CRITICAL fix (firmware code review F1): stack was [32] which made
+// sizeof(CrashRtcRecord) = 12*4 + 32*4 = 176 bytes. At RTC word offset 96
+// the record would have occupied bytes 384..559 — but ESP8266 RTC user
+// memory caps at 512 bytes (128 words). The Arduino core's rtcUserMemory*
+// silently rejects out-of-range writes and returns false; crash_recorder.cpp
+// ignored the bool. EVERY crash record since this module shipped was lost.
+// Shrinking stack[20] → sizeof becomes 12*4 + 20*4 = 128 bytes = 32 words,
+// fitting exactly at offset 96..127 with the breadcrumb at 80..83 below.
 struct CrashRtcRecord {
   uint32_t magic;          // validity sentinel
   uint32_t crc;            // CRC32 of every field after this one
@@ -26,8 +35,9 @@ struct CrashRtcRecord {
   uint32_t uptimeMs;       // millis() at crash
   uint32_t fwVersionHash;  // hash of FIRMWARE_VERSION at crash
   uint32_t stackDepth;     // number of valid words in stack[]
-  uint32_t stack[32];      // top-of-stack excerpt
+  uint32_t stack[20];      // top-of-stack excerpt (was [32], see 0.2.25 note above)
 };
+static_assert(sizeof(CrashRtcRecord) == 128, "CrashRtcRecord must fit RTC byte budget");
 
 namespace CrashRecorder {
 
