@@ -40,7 +40,19 @@ EventLog* gEventLog = nullptr;
 String gSecret;
 bool gActive = false;
 
-uint64_t gNonceRing[NONCE_RING_SIZE] = {0};
+// 0.2.25 CRITICAL fix (code review F19): pre-fix the ring was zero-init'd
+// AND used equality compare against the incoming nonce. A legitimate
+// nonce of 0 (e.g. an agent counter starting from zero) collided with every
+// zero-init'd slot and was ACK_REPLAYed on every boot until the agent's
+// nonce overflowed. Use UINT64_MAX as the "empty" sentinel. Real nonces
+// are 64-bit random tokens — collision with UINT64_MAX has 1-in-2^64 odds.
+constexpr uint64_t NONCE_EMPTY = UINT64_MAX;
+uint64_t gNonceRing[NONCE_RING_SIZE] = {
+  NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY,
+  NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY,
+  NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY,
+  NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY, NONCE_EMPTY,
+};
 uint8_t gNonceRingHead = 0;
 
 uint32_t gAcceptedTotal = 0;
@@ -147,11 +159,20 @@ void processPacket() {
   uint8_t nonceBytes[8];
   memcpy(nonceBytes, buf + HMAC_LEN, 8);
 
-  // Replay protection — both the ±60s window and the nonce ring.
-  // time(nullptr) returns 0 until NTP syncs; if we're not synced, only
-  // the nonce ring guards us. That's still acceptable on LAN.
+  // 0.2.25 CRITICAL fix (code review F5): fail-closed when NTP isn't
+  // synced. Pre-fix the entire skew check was wrapped in `if (now > 0)`
+  // so a device with broken NTP/DNS/captive-portal trusted ANY timestamp
+  // and the only replay defense was the 32-slot nonce ring (~1.6s of
+  // coverage at design cadence). A captured relay_off packet could be
+  // replayed for the device's entire offline-from-NTP lifetime. Now
+  // we reject when the device doesn't know what time it is.
   const time_t now = time(nullptr);
-  if (now > 0) {
+  if (now <= 0) {
+    sendAck(peer, peerPort, nonceBytes, ACK_STALE_TS, gRelay ? gRelay->isOn() : 0);
+    ++gRejectedTotal;
+    return;
+  }
+  {
     const int64_t skew = int64_t(now) - int64_t(ts);
     if (skew > TS_WINDOW_S || -skew > TS_WINDOW_S) {
       sendAck(peer, peerPort, nonceBytes, ACK_STALE_TS, gRelay ? gRelay->isOn() : 0);
