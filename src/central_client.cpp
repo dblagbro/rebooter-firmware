@@ -41,11 +41,16 @@ static constexpr uint32_t TRANSPORT_FAILURE_LOG_INTERVAL_MS = 120000;
 // UTC). Restart proactively once mfb stays below the threshold for the
 // debounce window AND the device has been up long enough that we're sure
 // we're not bouncing on startup pressure. Both conditions must hold.
-// 0.2.22: raised from 8000 → 13000. Per 06-08 fleet snapshot .185 was
-// holding steady at mfb≈13.5K — well above 8K so it never tripped, but
-// uncomfortably close to the ~12K BearSSL handshake floor. A proactive
-// restart at 13K gives us margin before the next handshake starves.
-static constexpr uint16_t HEAP_PRESSURE_MFB_THRESHOLD = 13000;
+// 0.2.24: lowered to 10000 from 0.2.22's 13000. The 13K bump was too
+// aggressive given 0.2.22+0.2.23's own ~5K of new static cost (UDP
+// listener buffer, RTC breadcrumb, hardened atomic-write paths) —
+// post-OTA steady-state mfb dropped to 11-15K, and 13K threshold fired
+// proactive restarts every ~5-10 min on healthy-trending devices.
+// .190 logged 10 planned restarts in ~1h on 0.2.23 with the 13K floor.
+// 10K is the new compromise: high enough to give margin above the
+// ~7-8K BearSSL handshake actual-failure point, low enough not to
+// fire on transient post-HTTPS dips.
+static constexpr uint16_t HEAP_PRESSURE_MFB_THRESHOLD = 10000;
 static constexpr uint8_t HEAP_PRESSURE_DEBOUNCE_SAMPLES = 6;  // 6 samples * 5s = 30s sustained
 static constexpr uint32_t HEAP_PRESSURE_CHECK_INTERVAL_MS = 5000;
 static constexpr uint32_t HEAP_PRESSURE_MIN_UPTIME_S = 1800;  // don't fire in the first 30min
