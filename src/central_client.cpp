@@ -41,16 +41,18 @@ static constexpr uint32_t TRANSPORT_FAILURE_LOG_INTERVAL_MS = 120000;
 // UTC). Restart proactively once mfb stays below the threshold for the
 // debounce window AND the device has been up long enough that we're sure
 // we're not bouncing on startup pressure. Both conditions must hold.
-// 0.2.24: lowered to 10000 from 0.2.22's 13000. The 13K bump was too
-// aggressive given 0.2.22+0.2.23's own ~5K of new static cost (UDP
-// listener buffer, RTC breadcrumb, hardened atomic-write paths) —
-// post-OTA steady-state mfb dropped to 11-15K, and 13K threshold fired
-// proactive restarts every ~5-10 min on healthy-trending devices.
-// .190 logged 10 planned restarts in ~1h on 0.2.23 with the 13K floor.
-// 10K is the new compromise: high enough to give margin above the
-// ~7-8K BearSSL handshake actual-failure point, low enough not to
-// fire on transient post-HTTPS dips.
-static constexpr uint16_t HEAP_PRESSURE_MFB_THRESHOLD = 10000;
+// 0.2.30: raised from 10000 → 11000. Live diag data from 2026-06-11
+// showed devices SUSTAINING mfb=10080 frag=38% for 2+ minutes — just
+// barely above the 10K floor so proactive restart didn't fire — then
+// .188 brown-outed (REASON_DEFAULT_RST "Power On") inside that
+// danger window. The heavy BearSSL retry traffic at sub-12K mfb
+// causes a current spike the marginal power supply can't sustain.
+// Setting the floor at 11K catches steady-state pressure BEFORE the
+// brown-out, while leaving 1K margin above the ~10K-and-shrinking
+// pattern that's been the chronic cascade trigger. The proactive
+// restart path is now busy-wait + wdtFeed (0.2.26 fix) so firing
+// more often no longer produces Exception-class secondary crashes.
+static constexpr uint16_t HEAP_PRESSURE_MFB_THRESHOLD = 11000;
 static constexpr uint8_t HEAP_PRESSURE_DEBOUNCE_SAMPLES = 6;  // 6 samples * 5s = 30s sustained
 static constexpr uint32_t HEAP_PRESSURE_CHECK_INTERVAL_MS = 5000;
 static constexpr uint32_t HEAP_PRESSURE_MIN_UPTIME_S = 1800;  // don't fire in the first 30min
