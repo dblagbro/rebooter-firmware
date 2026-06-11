@@ -37,8 +37,23 @@ void EventLog::begin(uint16_t maxEntries) {
 
 void EventLog::add(const String& type, const String& message) {
   // 0.2.27 #206: tap every event into the diag UDP syslog. No-op when
-  // the syslog isn't configured. Fire-and-forget — never blocks.
+  // the syslog isn't configured. Fire-and-forget — never blocks. Done
+  // BEFORE the heap-pressure bail below so we get the diag packet even
+  // when we can't persist the entry locally.
   DiagSyslog::sendEvent(type, message);
+
+  // 0.2.31 #208 (CRITICAL): bail out when heap is too low to safely
+  // construct the String objects below. The Arduino String operations
+  // (substring, concat, +, comparison via ==) can fail under heap
+  // pressure with a NULL internal buffer. The comparison at the dedup
+  // check (last.type == cleanType && last.message == cleanMessage) then
+  // passes NULL to ROM strncmp at 0x40010DA0, exception cause 29.
+  // Both .185 and .188 crash-dumped at the exact same address proving
+  // the bug is deterministic at sub-12K heap, not a fleet-wide flake.
+  // 4K is the safety floor below which we can't trust new String
+  // allocations; the diag packet above still captures the event.
+  if (ESP.getMaxFreeBlockSize() < 4000) return;
+
   String cleanType = type;
   cleanType.trim();
   if (cleanType.isEmpty()) cleanType = "event";
@@ -53,6 +68,11 @@ void EventLog::add(const String& type, const String& message) {
   if (cleanMessage.length() > 80) {
     cleanMessage = cleanMessage.substring(0, 77) + "...";
   }
+  // 0.2.31: additional defense — if either String came out empty after
+  // trim+normalize, the source had no usable content; logging an empty
+  // entry is pointless and adding it to the dedup ring confuses future
+  // comparisons. Skip.
+  if (cleanType.length() == 0 || cleanMessage.length() == 0) return;
 
   const uint32_t nowSeconds = millis() / 1000UL;
   if (!items_.empty()) {
