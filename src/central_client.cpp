@@ -899,7 +899,17 @@ bool CentralClient::sendHeartbeat() {
     const String detail = response.isEmpty() ? String("unknown transport error") : summarizeResponse(response);
     Serial.print("Central heartbeat transport failed: ");
     Serial.println(detail);
-    logThrottled(lastHeartbeatFailureLogAtMs_, "central", "Heartbeat transport failed; backing off",
+    // 0.2.29 #207: surface the actual failure reason in the event log
+    // (and through diag-syslog). The pre-fix message "Heartbeat
+    // transport failed; backing off" with no detail meant we couldn't
+    // distinguish DNS/TCP/TLS/HTTP failures from each other in the
+    // forensic log — every .185 cascade showed the same vague line
+    // repeating. With code + detail we know WHICH transport step is
+    // breaking on each retry.
+    logThrottled(lastHeartbeatFailureLogAtMs_, "central",
+                 "Heartbeat transport failed: code=" + String(code) +
+                 " detail=" + detail + " mfb=" + String(ESP.getMaxFreeBlockSize()) +
+                 " backing off",
                  TRANSPORT_FAILURE_LOG_INTERVAL_MS);
     setState("heartbeat_transport_failed");
     scheduleTransportFailureCooldown(millis(), false);
