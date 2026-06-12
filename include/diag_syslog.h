@@ -36,6 +36,12 @@ void loop();
 
 // Tap points — fire-and-forget, never block.
 void sendEvent(const String& type, const String& message);
+// 0.2.32 #209: raw-pointer overload for the critical-failure path
+// where building Arduino Strings would itself allocate and risk the
+// NULL-buffer crash. Pass stack-buffer or string-literal pointers
+// directly; never call this with a c_str() of a possibly-NULL-buffer
+// String.
+void sendEventCStr(const char* type, const char* message);
 void sendWifiState(const char* what, const String& detail = String());
 void sendBreadcrumb(uint8_t op);
 void sendResetReason(const String& reason);

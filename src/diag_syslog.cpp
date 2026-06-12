@@ -114,16 +114,27 @@ void loop() {
 }
 
 void sendEvent(const String& type, const String& message) {
+  // 0.2.32 #209: defensive NULL-check on c_str(). Arduino String sets
+  // buffer=NULL after allocation failure; c_str() returns NULL in that
+  // state. Without this guard we'd dereference NULL inside escapeJsonInto
+  // exactly when the device was under the heap pressure we wanted to
+  // forensically capture.
+  const char* typeStr = type.c_str();
+  const char* msgStr = message.c_str();
+  sendEventCStr(typeStr ? typeStr : "?", msgStr ? msgStr : "?");
+}
+
+void sendEventCStr(const char* type, const char* message) {
   if (!gActive) return;
+  if (!type) type = "?";
+  if (!message) message = "?";
   char buf[512];
   int n = writeHeader(buf, sizeof(buf), "event");
   if (n <= 0 || (size_t)n >= sizeof(buf)) return;
-  // Append ",type":"..","msg":".."
-  // Escape type + message.
   char typeBuf[40];
   char msgBuf[200];
-  escapeJsonInto(typeBuf, sizeof(typeBuf), type.c_str());
-  escapeJsonInto(msgBuf, sizeof(msgBuf), message.c_str());
+  escapeJsonInto(typeBuf, sizeof(typeBuf), type);
+  escapeJsonInto(msgBuf, sizeof(msgBuf), message);
   snprintf(buf + n, sizeof(buf) - n,
            ",\"type\":\"%s\",\"msg\":\"%s\"}",
            typeBuf, msgBuf);
