@@ -10,6 +10,7 @@
 #include "config_manager.h"
 #include "event_log.h"
 #include "firmware_version.h"
+#include "safe_restart.h"
 #include "monitor_engine.h"
 #include "ota_manager.h"
 #include "auth_manager.h"
@@ -1874,7 +1875,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     sEventLog->flush();
     sCfgMgr->prepareForPlannedRestart("api_reboot");
     server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
-    delay(100);
+    safeRestartWait(100);  // 0.2.33 #205
     ESP.restart();
   });
 
@@ -1885,7 +1886,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     sCfgMgr->prepareForPlannedRestart("api_recovery_boot");
     sCfgMgr->requestRecoveryBoot();
     server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true,\"recovery_boot\":true}");
-    delay(100);
+    safeRestartWait(100);  // 0.2.33 #205
     ESP.restart();
   });
 
@@ -1900,7 +1901,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     sCfgMgr->reset();
     sCfgMgr->prepareForPlannedRestart("api_factory_reset");
     server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
-    delay(100);
+    safeRestartWait(100);  // 0.2.33 #205
     ESP.restart();
   });
 
@@ -1913,7 +1914,7 @@ void WebServerManager::begin(AppConfig* config, RuntimeStatus* status,
     }
     sCfgMgr->prepareForPlannedRestart("api_ota_finalize");
     server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
-    delay(250);
+    safeRestartWait(250);  // 0.2.33 #205
     ESP.restart();
   }, []() {
     if (sAuth && !sAuth->isAuthorized(server)) return;
