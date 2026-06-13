@@ -22,6 +22,7 @@
 #include "pre_crash_breadcrumb.h"
 #include "udp_control.h"
 #include "diag_syslog.h"
+#include "safe_restart.h"
 #include "discovery_manager.h"
 #include "firmware_version.h"
 
@@ -194,7 +195,7 @@ void setup() {
     g_eventLog.flush();
     g_cfgMgr.markBootHealthy();
     g_cfgMgr.prepareForPlannedRestart("recovery_provisioning_complete");
-    delay(150);
+    safeRestartWait(150);  // 0.2.33 #205: no SYS yield (was delay(150))
     ESP.restart();
   }
   g_notifier.begin(&g_config);

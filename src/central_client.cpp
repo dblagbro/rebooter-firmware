@@ -9,6 +9,7 @@
 #include "config_manager.h"
 #include "diag_syslog.h"
 #include "event_log.h"
+#include "safe_restart.h"
 #include "firmware_version.h"
 #include "power_monitor.h"
 #include "pre_crash_breadcrumb.h"
@@ -53,8 +54,24 @@ static constexpr uint32_t TRANSPORT_FAILURE_LOG_INTERVAL_MS = 120000;
 // pattern that's been the chronic cascade trigger. The proactive
 // restart path is now busy-wait + wdtFeed (0.2.26 fix) so firing
 // more often no longer produces Exception-class secondary crashes.
-static constexpr uint16_t HEAP_PRESSURE_MFB_THRESHOLD = 11000;
-static constexpr uint8_t HEAP_PRESSURE_DEBOUNCE_SAMPLES = 6;  // 6 samples * 5s = 30s sustained
+// 0.2.33: bumped to 13000 from 11000. .185 was sitting stably at
+// mfb=11216 frag=33-40% for ~80 seconds then crashing inside the
+// WiFi SDK (ieee80211_setup_ratetable on the stack, EPC1=0x4000df64
+// = ROM strncmp + 4 with NULL). Confirmed via 0.2.25 CrashRecorder +
+// diag-syslog — the crash is the WiFi stack's internal allocations
+// failing under heap fragmentation we can't reach from firmware code.
+// 13K threshold + 15s debounce (was 30s) restarts the device BEFORE
+// the WiFi stack panics. The original 0.2.22 13K problem (restart
+// loops) is gone because the post-0.2.31/0.2.32 fixes mean each
+// proactive restart is a clean Software/System restart instead of
+// cascading into Exception-class secondary crashes.
+static constexpr uint16_t HEAP_PRESSURE_MFB_THRESHOLD = 13000;
+// 0.2.33: 3 samples × 5s = 15s sustained (was 6×5s=30s). The WiFi
+// SDK starts crashing within ~80s of sustained sub-13K mfb; the
+// 30s debounce was leaving a 45s window for the WiFi-stack NULL
+// deref to fire. 15s gives enough confidence the pressure isn't
+// transient while still beating the SDK's crash timing.
+static constexpr uint8_t HEAP_PRESSURE_DEBOUNCE_SAMPLES = 3;
 static constexpr uint32_t HEAP_PRESSURE_CHECK_INTERVAL_MS = 5000;
 static constexpr uint32_t HEAP_PRESSURE_MIN_UPTIME_S = 1800;  // don't fire in the first 30min
 // 0.2.17 sweep S6: heap samples taken within this window after an HTTPS
@@ -279,24 +296,10 @@ void CentralClient::maybeHeapPressureRestart() {
     eventLog_->flush();
   }
   cfgMgr_->prepareForPlannedRestart("heap_pressure_proactive");
-  // 0.2.26 CRITICAL fix (code review F6): pre-fix `delay(500)` yielded
-  // to the SYS task while we were waiting for flash commit. Under the
-  // exact heap pressure that triggered the restart, lwIP RX / BearSSL
-  // background could `alloc-fail → REASON_EXCEPTION_RST` inside the
-  // delay window — the safety net was producing more ghost reboots
-  // than it prevented. .188 saw 8 Exception-class reboots / hr on
-  // 0.2.23-0.2.25 sitting downstream of this code path.
-  //
-  // Tight busy-wait keeps the CPU on this thread (no SYS yield) while
-  // feeding both watchdogs so the device doesn't WDT-reset mid-wait.
-  // 500ms is preserved as the budget because LittleFS metadata commits
-  // are technically async at the flash-driver layer; pre-empting the
-  // settle window can leave the planned-restart breadcrumb un-persisted.
-  const uint32_t restartStart = millis();
-  while (millis() - restartStart < 500) {
-    ESP.wdtFeed();
-    delayMicroseconds(1000);  // busy-wait, no scheduler yield
-  }
+  // 0.2.26 CRITICAL fix (code review F6) — see safeRestartWait() in
+  // include/safe_restart.h for the SYS-yield-race rationale. 0.2.33
+  // factored this into a shared helper used by every pre-restart site.
+  safeRestartWait(500);
   ESP.restart();
 }
 
@@ -1067,7 +1070,7 @@ size_t CentralClient::processCommandsArray(JsonArray commands, const String& sou
     }
     if (executed && shouldRestart) {
       if (cfgMgr_) cfgMgr_->prepareForPlannedRestart(restartReason);
-      delay(200);
+      safeRestartWait(200);  // 0.2.33 #205: no SYS yield (was delay(200))
       ESP.restart();
     }
   }
