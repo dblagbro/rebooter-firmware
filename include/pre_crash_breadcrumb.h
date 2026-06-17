@@ -29,6 +29,16 @@ enum Op : uint8_t {
   OP_HTTPS_REGISTER        = 4,
   OP_HTTPS_FETCH_COMMANDS  = 5,
   OP_OTA_FINALIZE          = 6,
+  // 0.2.34 BUG-077 fix (c): LittleFS write paths. .190's Hardware
+  // Watchdog crash on 2026-06-14 18:33 produced no breadcrumb event
+  // — the prior opcode coverage was HTTPS-only, but LittleFS writes
+  // (event-log flush, config save, boot-state persist) can take
+  // 100-500ms on flash-erase paths and are a known watchdog-trip
+  // candidate. Wrap every persist() call site so the next watchdog
+  // crash captures which FS operation was in flight.
+  OP_FS_EVENT_LOG_WRITE    = 7,
+  OP_FS_CONFIG_WRITE       = 8,
+  OP_FS_BOOT_STATE_WRITE   = 9,
 };
 
 // Read RTC; if a valid uncleared record is present, log it via the

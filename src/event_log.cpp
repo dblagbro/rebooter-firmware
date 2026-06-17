@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include "diag_syslog.h"
 #include "event_log.h"
+#include "pre_crash_breadcrumb.h"
 
 namespace {
 constexpr uint32_t EVENT_LOG_PERSIST_DEBOUNCE_MS = 1500UL;
@@ -222,6 +223,10 @@ void EventLog::flush() {
 }
 
 void EventLog::persist() {
+  // 0.2.34 BUG-077 fix (c): breadcrumb wraps the whole persist body so
+  // a watchdog/exception during JSON serialization, file open, write,
+  // remove, or rename surfaces "fs-event-log-write" on the next boot.
+  PreCrashBreadcrumb::Scope scope(PreCrashBreadcrumb::OP_FS_EVENT_LOG_WRITE);
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
   for (const auto& item : items_) {

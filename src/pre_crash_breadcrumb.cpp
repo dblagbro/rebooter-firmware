@@ -32,6 +32,9 @@ const char* opName(uint8_t op) {
     case OP_HTTPS_REGISTER:       return "https-register";
     case OP_HTTPS_FETCH_COMMANDS: return "https-fetch-commands";
     case OP_OTA_FINALIZE:         return "ota-finalize";
+    case OP_FS_EVENT_LOG_WRITE:   return "fs-event-log-write";
+    case OP_FS_CONFIG_WRITE:      return "fs-config-write";
+    case OP_FS_BOOT_STATE_WRITE:  return "fs-boot-state-write";
     default:                      return "unknown";
   }
 }

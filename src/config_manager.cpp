@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include "config_manager.h"
+#include "pre_crash_breadcrumb.h"
 
 static const char* LAST_KNOWN_GOOD_PATH = "/config.lkg.json";
 static const char* TEMP_CONFIG_PATH = "/config.tmp";
@@ -54,6 +55,8 @@ static StoredBootState loadBootStateRecord() {
 }
 
 static bool saveBootStateRecord(const StoredBootState& state) {
+  // 0.2.34 BUG-077 fix (c): breadcrumb covers the boot-state write path.
+  PreCrashBreadcrumb::Scope scope(PreCrashBreadcrumb::OP_FS_BOOT_STATE_WRITE);
   JsonDocument doc;
   doc["consecutive_unhealthy_boots"] = state.consecutiveUnhealthyBoots;
   doc["boot_in_progress"] = state.bootInProgress;
@@ -455,6 +458,11 @@ static void writeConfigDocument(JsonDocument& doc, const AppConfig& clean) {
 }
 
 static bool writeConfigToPath(const char* path, const AppConfig& config) {
+  // 0.2.34 BUG-077 fix (c): breadcrumb covers config writes (regular
+  // save + last-known-good snapshot). validateConfig + JSON serialize
+  // + flash open/write/close — any of these can stall the loop long
+  // enough to hit the watchdog on a slow flash page.
+  PreCrashBreadcrumb::Scope scope(PreCrashBreadcrumb::OP_FS_CONFIG_WRITE);
   AppConfig clean = config;
   validateConfig(clean);
 

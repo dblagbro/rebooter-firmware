@@ -74,6 +74,17 @@ static constexpr uint16_t HEAP_PRESSURE_MFB_THRESHOLD = 13000;
 static constexpr uint8_t HEAP_PRESSURE_DEBOUNCE_SAMPLES = 3;
 static constexpr uint32_t HEAP_PRESSURE_CHECK_INTERVAL_MS = 5000;
 static constexpr uint32_t HEAP_PRESSURE_MIN_UPTIME_S = 1800;  // don't fire in the first 30min
+// 0.2.34 BUG-077 fix (b): trajectory-slope discriminator. After the
+// debounce window confirms mfb is below threshold, also look at the
+// heap-trajectory ring. If mfb has been TRENDING UPWARD across the
+// 60s window (newest sample > oldest sample by this delta), the
+// pressure is fragmentation noise resolving on its own — suppress
+// the proactive restart. If mfb is stuck flat or trending DOWN,
+// that's real erosion — fire as before. Distinguishes BUG-077-style
+// .190 burst loops (fragmented post-watchdog boot, mfb oscillates
+// 8K↔15K) from the original BUG-188 / .185 erosion scenarios
+// (sustained mfb decay from 14K → 11K → 8K, no recovery).
+static constexpr uint32_t HEAP_PRESSURE_RECOVERY_DELTA = 1024;
 // 0.2.17 sweep S6: heap samples taken within this window after an HTTPS
 // call returns are biased by the BearSSL buffer's transient post-alloc
 // state and are skipped to avoid false-positive heap-pressure trips.
@@ -83,6 +94,15 @@ static constexpr uint32_t TRANSPORT_FAILURE_FIRMWARE_FLOOR_MS = 120000;
 static constexpr uint32_t REPORTED_CONFIG_STARTUP_DELAY_SECONDS = 600;
 static constexpr uint32_t REPORTED_CONFIG_INTERVAL_MS = 900000;
 static constexpr uint32_t COMPACT_HEARTBEAT_FREE_HEAP_THRESHOLD = 20000;
+// 0.2.34 BUG-077 fix (a): also drop to compact heartbeat when mfb is
+// low, even if free_heap is healthy. .190's burst-loop trajectory
+// shows fh hovering 20-21K (above the fh threshold so compact does
+// NOT engage) while mfb oscillates 8-15K (well into the proactive
+// danger zone). The verbose heartbeat then allocates a multi-K JSON
+// + body String through that already-fragmented heap and re-fires
+// the dip. Compact-on-fragmentation lets the device shed the
+// extra alloc footprint on the cycles where it matters most.
+static constexpr uint32_t COMPACT_HEARTBEAT_MFB_THRESHOLD = 14000;
 // Cap on hub base URLs attempted in a single failover cycle. With up to 10
 // configurable URLs, a fully-down list would otherwise do 10 sequential TLS
 // handshakes per cycle, which is the most expensive heap event in the
@@ -252,7 +272,13 @@ bool CentralClient::shouldIncludeReportedConfig(uint32_t now) const {
 }
 
 bool CentralClient::shouldUseCompactHeartbeat() const {
-  return ESP.getFreeHeap() < COMPACT_HEARTBEAT_FREE_HEAP_THRESHOLD;
+  // 0.2.34 BUG-077 fix (a): trigger on EITHER low free-heap OR low
+  // max-free-block. The original fh-only gate misses the .190
+  // fragmented-but-not-low scenario (fh=21K, mfb=9K) where the
+  // verbose heartbeat fragments further and pushes mfb deeper
+  // toward the proactive-restart trip line.
+  return ESP.getFreeHeap() < COMPACT_HEARTBEAT_FREE_HEAP_THRESHOLD ||
+         ESP.getMaxFreeBlockSize() < COMPACT_HEARTBEAT_MFB_THRESHOLD;
 }
 
 void CentralClient::maybeHeapPressureRestart() {
@@ -283,7 +309,17 @@ void CentralClient::maybeHeapPressureRestart() {
   // a command re-delivered after the restart still executes correctly, and
   // silently suppressing the safety net was the more dangerous failure mode.
 
-  // Sustained pressure — fire a clean planned restart with breadcrumb.
+  // 0.2.34 BUG-077 fix (b): if the heap trajectory shows recovery in
+  // progress, the pressure is fragmentation noise resolving on its own
+  // — suppress this fire. Reset the debounce so the NEXT below-threshold
+  // run has to re-accumulate; otherwise we'd fire on the very next tick
+  // as soon as recovery stops.
+  if (heapTrajectoryRecovering()) {
+    heapPressureSampleCount_ = 0;
+    return;
+  }
+
+  // Sustained pressure with no recovery trend — fire a clean planned restart.
   Serial.print("Heap-pressure proactive restart: mfb=");
   Serial.print(mfb);
   Serial.print(" sustained for ");
@@ -301,6 +337,21 @@ void CentralClient::maybeHeapPressureRestart() {
   // factored this into a shared helper used by every pre-restart site.
   safeRestartWait(500);
   ESP.restart();
+}
+
+// 0.2.34 BUG-077 fix (b): inspect the heap-trajectory ring to decide
+// whether mfb is recovering. The ring carries up to 12 samples at 5s
+// intervals = 60s of history. Returns true when the newest sample's
+// mfb is at least HEAP_PRESSURE_RECOVERY_DELTA bytes above the
+// oldest. Requires the ring to have at least 6 samples (30s window)
+// — fewer samples can't reliably distinguish trend from noise.
+bool CentralClient::heapTrajectoryRecovering() const {
+  if (heapRingCount_ < 6) return false;
+  const uint8_t oldest = (heapRingHead_ + HEAP_RING_SIZE - heapRingCount_) % HEAP_RING_SIZE;
+  const uint8_t newest = (heapRingHead_ + HEAP_RING_SIZE - 1) % HEAP_RING_SIZE;
+  const uint16_t oldMfb = heapRing_[oldest].max_free_block;
+  const uint16_t newMfb = heapRing_[newest].max_free_block;
+  return newMfb > oldMfb && static_cast<uint32_t>(newMfb - oldMfb) >= HEAP_PRESSURE_RECOVERY_DELTA;
 }
 
 void CentralClient::sampleHeap() {

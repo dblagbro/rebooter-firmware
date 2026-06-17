@@ -507,3 +507,46 @@ project.
   - trim repeated failure logging on the hot path
   - rerun a small controlled soak after the next mitigation
 - status: open; this is now the primary firmware blocker
+
+## 2026-06-16 0.2.34 — BUG-077 proactive-restart burst loop (.190)
+
+See `rebooter-droids/docs/bug-log.md` BUG-077 for the full diagnosis.
+Firmware side ships fixes (b) + (c) here; (a) follows in 0.2.35.
+
+**(b) Trajectory-slope discriminator in
+`CentralClient::maybeHeapPressureRestart`.** After the existing
+debounce confirms mfb < 13K for 3 consecutive samples, consult the
+heap-trajectory ring (12 × 5s = 60s of history). If mfb has been
+trending UPWARD across the window — newest sample exceeds the oldest
+by ≥1024 bytes — the pressure is fragmentation resolving on its own.
+Suppress the proactive restart and reset the debounce. If mfb is flat
+or trending DOWN, that's real erosion; fire as before. Distinguishes
+.190 fragmented-boot oscillation (8K↔15K) from .185-class erosion
+(steady decay). Constant `HEAP_PRESSURE_RECOVERY_DELTA = 1024`,
+ring-min-samples 6 (30s window).
+
+**(c) Pre-crash breadcrumb coverage for LittleFS writes.** .190's
+Hardware Watchdog reset on 2026-06-14 18:33 produced NO breadcrumb
+event — the prior opcode set was HTTPS-only. Added three new opcodes
+(OP_FS_EVENT_LOG_WRITE, OP_FS_CONFIG_WRITE, OP_FS_BOOT_STATE_WRITE)
+and wrapped every persist() call site in
+`PreCrashBreadcrumb::Scope`. Next watchdog crash will surface which
+FS write was in flight at the moment the loop got starved.
+
+**(a) Compact heartbeat on fragmentation, not just on low free-heap.**
+Deeper trajectory analysis flipped the original "find an 8K alloc"
+framing. mfb dips with EVERY heartbeat (per-call BearSSL handshake +
+JSON body) and recovers in the inter-beat gap — not a persistent
+leak. The verbose heartbeat is the dominant per-call fragmenter when
+mfb is already low. Pre-fix `shouldUseCompactHeartbeat()` gated on
+`free_heap < 20K` only; .190's fh sat 20-21K (above the gate) while
+mfb sat 8-15K (well into danger). Added an `mfb < 14K` companion
+gate so compact engages when fragmentation alone warrants it.
+
+- size: RAM 56.9% / Flash 67.7% — no growth (matches 0.2.33).
+- build: clean against sonoff_s31 env, zero warnings.
+- staging: 0.2.34-dev-central-safe; -dev-central-safe-badboot also
+  bumped for the bad-boot test build.
+- status: open; ship to .190 first, soak 24h to confirm bursts no
+  longer fire on fragmented post-watchdog boots. Then promote to
+  fleet-stable.

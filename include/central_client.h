@@ -147,5 +147,10 @@ private:
   // decision).
   uint32_t lastHttpsCompletedAtMs_ = 0;
   void sampleHeap();
+  // 0.2.34 BUG-077 fix (b): true iff the heap-trajectory ring shows
+  // mfb trending upward across its window (≥6 samples / 30s). Caller
+  // uses this to suppress proactive-restart fires when fragmentation
+  // pressure is resolving on its own.
+  bool heapTrajectoryRecovering() const;
   void serializeHeapTrajectory(JsonDocument& doc);
 };
