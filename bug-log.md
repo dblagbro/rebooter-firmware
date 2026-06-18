@@ -538,6 +538,41 @@ project.
   recovery_mode cluster reappears, file a fresh entry rather than
   reopening this one; the failure surface has materially shifted.
 
+## 2026-06-18 BUG-084 — 0.2.34 trajectory discriminator misclassifies FLAT mfb as erosion — fixed in 0.2.36
+
+The 0.2.34 BUG-077 fix (b) — `heapTrajectoryRecovering()` — had the
+wrong semantic. The original guard returned `true` only when mfb
+had trended UP by ≥1024 bytes over the ring window. A FLAT mfb
+(newest == oldest, stuck at e.g. 12456 for 60s) returned `false`,
+so the caller fired the proactive restart even though no actual
+erosion was happening.
+
+That's exactly the .190 fragmented-boot pattern BUG-077 was meant
+to suppress. Live data confirms: .190 logged 10 reboots between
+0.2.34 install at 2026-06-18 10:54 UTC and 21:41 UTC — once it
+got into the bursting pattern (around 18:00, triggered by my
+relay-test traffic) it kept firing every ~30 minutes.
+
+Captured trajectory right before the 21:05:54 proactive restart:
+mfb=12456 across all 12 ring samples (60 seconds of dead-flat
+readings, fh=20696 healthy, frag=36%). Not eroding. Pure
+post-fragmentation steady state.
+
+**Fix in 0.2.36:** semantic flip.
+- TRUE (suppress) when mfb is FLAT or recovering (`newMfb >= oldMfb`,
+  or any drop < `HEAP_PRESSURE_RECOVERY_DELTA`).
+- FALSE (fire) only when an actual drop of ≥1024 bytes is observed
+  over the 30-60s window — real erosion.
+
+The .185-style WiFi-SDK NULL-deref protection still lives in the
+13K threshold + 15s debounce; the discriminator only suppresses
+the FLAT-low pattern that 0.2.34 was supposed to solve but didn't.
+
+**Status: fixed in 0.2.36.** .190 promotion + 24h soak window
+re-starts at 0.2.36 install time.
+
+---
+
 ## 2026-06-17 P3 — firmware-side next-tier code review (BUG-079..083)
 
 Parallel to the hub-side #201 sweep that filed BUG-072..076. Four

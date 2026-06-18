@@ -349,19 +349,45 @@ void CentralClient::maybeHeapPressureRestart() {
   ESP.restart();
 }
 
-// 0.2.34 BUG-077 fix (b): inspect the heap-trajectory ring to decide
-// whether mfb is recovering. The ring carries up to 12 samples at 5s
-// intervals = 60s of history. Returns true when the newest sample's
-// mfb is at least HEAP_PRESSURE_RECOVERY_DELTA bytes above the
-// oldest. Requires the ring to have at least 6 samples (30s window)
-// — fewer samples can't reliably distinguish trend from noise.
+// 0.2.34 BUG-077 fix (b) — REVISED in 0.2.36 BUG-084:
+// the original semantic ("return true when mfb has trended UP by
+// >=1024B") had a subtle bug: a FLAT mfb (newest == oldest, stuck
+// at e.g. 12456 for 60s) returned false → proactive restart fired
+// → burst loop continued exactly the way BUG-077 documented.
+//
+// The corrected semantic: "return true when mfb is NOT actively
+// eroding." A flat or recovering trajectory is post-fragmentation
+// steady state, not danger. Only an OBSERVED DROP of >=1024B over
+// the 60s window indicates real erosion that the proactive restart
+// is meant to catch. Stable-low mfb without erosion is the .190
+// fragmented-boot pattern that 0.2.34 was supposed to solve.
+//
+// .185-style protection (WiFi-SDK NULL-deref under sustained
+// pressure) is still provided by the 13K threshold + 15s debounce;
+// the discriminator only suppresses the burst pattern where mfb
+// has been flat for the full ring window with no observed
+// erosion.
+//
+// Returns TRUE when "not eroding" — caller suppresses fire.
+// Returns FALSE when erosion observed — caller fires as before.
+// Requires the ring to have at least 6 samples (30s window) —
+// fewer samples can't reliably distinguish trend from noise; the
+// 30-min uptime gate is the upstream protection so 30s of
+// trajectory data is always available at fire time.
 bool CentralClient::heapTrajectoryRecovering() const {
   if (heapRingCount_ < 6) return false;
   const uint8_t oldest = (heapRingHead_ + HEAP_RING_SIZE - heapRingCount_) % HEAP_RING_SIZE;
   const uint8_t newest = (heapRingHead_ + HEAP_RING_SIZE - 1) % HEAP_RING_SIZE;
   const uint16_t oldMfb = heapRing_[oldest].max_free_block;
   const uint16_t newMfb = heapRing_[newest].max_free_block;
-  return newMfb > oldMfb && static_cast<uint32_t>(newMfb - oldMfb) >= HEAP_PRESSURE_RECOVERY_DELTA;
+  // Drop = oldest - newest. Positive when mfb fell across the window.
+  if (newMfb >= oldMfb) {
+    // Flat or recovering → not eroding → suppress.
+    return true;
+  }
+  const uint32_t drop = static_cast<uint32_t>(oldMfb - newMfb);
+  // Suppress unless the drop crosses the erosion threshold.
+  return drop < HEAP_PRESSURE_RECOVERY_DELTA;
 }
 
 void CentralClient::sampleHeap() {
