@@ -538,6 +538,126 @@ project.
   recovery_mode cluster reappears, file a fresh entry rather than
   reopening this one; the failure surface has materially shifted.
 
+## 2026-06-17 P3 — firmware-side next-tier code review (BUG-079..083)
+
+Parallel to the hub-side #201 sweep that filed BUG-072..076. Four
+parallel reviewer angles over `git diff v0.2.6..HEAD` (28 versions,
+~1700 LOC of changes). Five candidates survived verification by
+direct file read; six others were de-prioritized as theoretical or
+not actually reproducible (heap-ring init concern dropped because
+`heapRingCount_ < 6` gate already covers it).
+
+### BUG-079 — CRITICAL — NULL-deref in 3 more transport-failure paths
+
+Same shape as BUG-208 / BUG-209 (fixed in 0.2.31 / 0.2.32), in three
+sites the 0.2.32 fix did NOT reach: `announceDevice`,
+`registerDevice`, and `pollCommands`.
+
+Pattern at `central_client.cpp:431-433`, `:842-844`, `:1052-1054`:
+```cpp
+const String detail = response.isEmpty()
+    ? String("unknown transport error")
+    : summarizeResponse(response);
+Serial.print("Central <op> transport failed: ");
+Serial.println(detail);
+```
+
+`summarizeResponse()` returns a `String` built from
+`response.replace(...).substring(0, maxLen)` — each operation can
+allocate a NULL-buffer String under heap pressure. `Serial.println
+(String)` then calls `detail.c_str()` which returns the NULL buffer
+and `Serial.println(const char*)` derefs NULL → EXCEPTION_RST 28/29.
+
+Plus three concat'd `eventLog_->add("central", "X failed (" +
+String(code) + "): " + summarizeResponse(response))` calls at
+`:443`, `:536`, `:883` that chain 3+ String operations.
+
+**Status: open.** Same fix shape as 0.2.32 — pre-flight the mfb,
+short-circuit to a literal C-string `Serial.print(...)` when memory
+is tight, or factor a `sendEventCStr(const char*)` overload. Should
+ship as 0.2.35.
+
+### BUG-080 — MEDIUM — `logThrottled` millis() rollover suppresses logs for 49 days
+
+`central_client.cpp:258`:
+```cpp
+if (lastAtMs != 0 && (now - lastAtMs) < minIntervalMs) return;
+```
+
+After `millis()` rollover (~49 days), if `lastAtMs` was set near
+`UINT32_MAX` and `now` wraps to a small number, `now - lastAtMs`
+underflows to a huge `uint32_t` (rollover of unsigned subtraction
+gives the small positive delta — actually this is CORRECT for
+`uint32_t`). Re-checking: `now=10, last=0xFFFFFFF0` →
+`now - last = 10 - 0xFFFFFFF0 = 0x14` = 20 → comparison works.
+So the OBVIOUS rollover concern is actually safe due to unsigned
+arithmetic semantics.
+
+The real bug is the `lastAtMs != 0` short-circuit: if a log
+happens to fire at exactly `millis() == 0` (statistically possible
+at boot or rollover), `lastAtMs` is set to 0, the next call
+treats it as "never throttled before" and re-logs immediately.
+Minor; logs once-extra per ~49 days per call site.
+
+**Status: open.** Trivial fix — replace the sentinel with a
+separate `bool hasFired_` per timestamp, or use a tagged
+`Optional<uint32_t>`-equivalent. Defer; cosmetic.
+
+### BUG-081 — LOW — `shouldUseCompactHeartbeat` dual-gate can oscillate
+
+`central_client.cpp:265-273` (the 0.2.34 (a) fix added an `mfb<14K`
+gate next to the existing `fh<20K`). A device near both thresholds
+can flip between compact and verbose modes every cycle: verbose
+peaks slice mfb, compact lows let fh recover. Each mode-switch
+costs JSON re-serialization.
+
+**Status: open.** Add hysteresis: separate "enter compact"
+thresholds (`fh<20K` / `mfb<14K`) from "exit compact" thresholds
+(`fh>22K AND mfb>16K`). Defer; no observed regression in the
+fleet data so far.
+
+### BUG-082 — LOW — `prepareForPlannedRestart` not cleared on failure paths
+
+`config_manager.cpp::prepareForPlannedRestart()` stages a reason
+into `bootstate.json` so the next boot's classifier knows it was
+planned. Cleared in `checkFirmwareAssignment` on
+`HTTP_UPDATE_FAILED` / `HTTP_UPDATE_NO_UPDATES`. NOT cleared in:
+- `web_server_manager.cpp` factory-reset endpoint when the user
+  kills power between `prepareForPlannedRestart` and the
+  `ESP.restart()` call.
+- Hub-issued `device_restart` command path.
+- The proactive heap-pressure restart path (always reaches
+  `ESP.restart()` so this is fine — included for completeness).
+
+**Status: open.** Failure mode: diagnostic misattribution — a
+brown-out gets logged as the planned reason on next boot. Fix:
+guarantee `clearPlannedRestart()` runs whenever the stage is set
+but the restart doesn't fire (set a stack-allocated RAII guard
+that clears on scope exit unless explicitly disarmed before the
+`ESP.restart()` call).
+
+### BUG-083 — CLEANUP — HTTPS client setup duplicated across 3+ sites
+
+`central_client.cpp:578-581`, `:644-650`, `:715-721` (approx) all
+do:
+```cpp
+std::unique_ptr<BearSSL::WiFiClientSecure> client(new ...);
+client->setInsecure();
+client->setBufferSizes(512, 512);
+HTTPClient http;
+```
+plus the boilerplate around `http.setTimeout`, `http.begin`,
+`http.addHeader`, response handling, and the 9-line "0.2.5
+pool-revert" comment.
+
+**Status: open.** Real cleanup candidate. Extract into
+`scopedHttpsClient()` that returns a small RAII wrapper carrying
+the configured `BearSSL` + `HTTPClient` pair. Future TLS-buffer
+tuning changes one site instead of three. Defer to a refactor
+ship; not blocking BUG-079.
+
+---
+
 ## 2026-06-16 0.2.34 — BUG-077 proactive-restart burst loop (.190)
 
 See `rebooter-droids/docs/bug-log.md` BUG-077 for the full diagnosis.
