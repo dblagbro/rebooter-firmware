@@ -85,13 +85,16 @@ private:
   // iteration starts here so a healthy hub is reached in a single TLS
   // handshake on the common path instead of always retrying from index 0.
   size_t lastGoodBaseUrlIndex_ = 0;
-  uint32_t lastAnnounceFailureLogAtMs_ = 0;
-  uint32_t lastRegisterFailureLogAtMs_ = 0;
-  uint32_t lastHeartbeatFailureLogAtMs_ = 0;
-  uint32_t lastPollFailureLogAtMs_ = 0;
-  uint32_t lastFirmwareFailureLogAtMs_ = 0;
-  uint32_t lastCommandResultFailureLogAtMs_ = 0;
-  uint32_t lastCompactHeartbeatLogAtMs_ = 0;
+  // 0.2.35 BUG-080: sentinel switched from 0 to UINT32_MAX so a log
+  // line that happens to land at millis()==0 (first boot tick) doesn't
+  // collide with the "never fired" marker. See logThrottled comment.
+  uint32_t lastAnnounceFailureLogAtMs_ = UINT32_MAX;
+  uint32_t lastRegisterFailureLogAtMs_ = UINT32_MAX;
+  uint32_t lastHeartbeatFailureLogAtMs_ = UINT32_MAX;
+  uint32_t lastPollFailureLogAtMs_ = UINT32_MAX;
+  uint32_t lastFirmwareFailureLogAtMs_ = UINT32_MAX;
+  uint32_t lastCommandResultFailureLogAtMs_ = UINT32_MAX;
+  uint32_t lastCompactHeartbeatLogAtMs_ = UINT32_MAX;
   bool pendingReportedConfig_ = true;
   bool steadyStateScheduled_ = false;
 

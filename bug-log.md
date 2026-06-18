@@ -547,7 +547,7 @@ direct file read; six others were de-prioritized as theoretical or
 not actually reproducible (heap-ring init concern dropped because
 `heapRingCount_ < 6` gate already covers it).
 
-### BUG-079 — CRITICAL — NULL-deref in 3 more transport-failure paths
+### BUG-079 — CRITICAL — NULL-deref in 3 more transport-failure paths — fixed in 0.2.35
 
 Same shape as BUG-208 / BUG-209 (fixed in 0.2.31 / 0.2.32), in three
 sites the 0.2.32 fix did NOT reach: `announceDevice`,
@@ -572,12 +572,23 @@ Plus three concat'd `eventLog_->add("central", "X failed (" +
 String(code) + "): " + summarizeResponse(response))` calls at
 `:443`, `:536`, `:883` that chain 3+ String operations.
 
-**Status: open.** Same fix shape as 0.2.32 — pre-flight the mfb,
-short-circuit to a literal C-string `Serial.print(...)` when memory
-is tight, or factor a `sendEventCStr(const char*)` overload. Should
-ship as 0.2.35.
+**Status: fixed in 0.2.35.** All three sites (announce L431,
+register L863, poll L1087) mirror the 0.2.32 heartbeat-path flow:
+literal `Serial.println` (no allocation), literal `logThrottled`
+(eventLog::add bails internally if mfb<4K), forensic detail packed
+via `snprintf` into a stack `char detailBuf[220]` and sent through
+`DiagSyslog::sendEventCStr` (stack-only path). Three concat'd
+`eventLog_->add(..., "X failed (" + String(code) + "): " +
+summarizeResponse(...))` sites at L443, L558, L905 replaced with
+`snprintf(failBuf, ..., "X failed (code=%d, mfb=%u)", code,
+ESP.getMaxFreeBlockSize())` into a new `EventLog::add(const char*,
+const char*)` overload. The new overload runs `DiagSyslog::
+sendEventCStr` BEFORE the mfb<4K bail, then constructs the
+internal Strings only if heap is healthy enough — eliminates the
+implicit `char*→String` allocation at the call site which was the
+remaining bug surface even with the in-function bail.
 
-### BUG-080 — MEDIUM — `logThrottled` millis() rollover suppresses logs for 49 days
+### BUG-080 — MEDIUM — `logThrottled` sentinel collision at millis()==0 — fixed in 0.2.35
 
 `central_client.cpp:258`:
 ```cpp
@@ -599,9 +610,14 @@ at boot or rollover), `lastAtMs` is set to 0, the next call
 treats it as "never throttled before" and re-logs immediately.
 Minor; logs once-extra per ~49 days per call site.
 
-**Status: open.** Trivial fix — replace the sentinel with a
-separate `bool hasFired_` per timestamp, or use a tagged
-`Optional<uint32_t>`-equivalent. Defer; cosmetic.
+**Status: fixed in 0.2.35.** Sentinel switched from `0` to
+`UINT32_MAX`. `millis()` rolls 0xFFFFFFFF→0 (never lands on
+0xFFFFFFFF naturally because the increment from there wraps), so
+UINT32_MAX is a true "never fired" marker that doesn't collide
+with any valid timestamp. All seven `lastXFailureLogAtMs_` member
+initializers in `central_client.h` updated to `UINT32_MAX`. The
+guard in `logThrottled` changed from `if (lastAtMs != 0 && ...)`
+to `if (lastAtMs != UINT32_MAX && ...)`.
 
 ### BUG-081 — LOW — `shouldUseCompactHeartbeat` dual-gate can oscillate
 

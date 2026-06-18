@@ -15,6 +15,12 @@ class EventLog {
 public:
   void begin(uint16_t maxEntries);
   void add(const String& type, const String& message);
+  // 0.2.35 BUG-079: const char* overload. Caller passes literal /
+  // stack-buffer C-strings; we do the mfb-bail BEFORE constructing
+  // an Arduino String (which would allocate strlen+1 bytes BEFORE
+  // entering this function in the implicit conversion path of the
+  // String& overload — a NULL-buffer at the call site, not here).
+  void add(const char* type, const char* message);
   String asJson() const;
   void loop();
   void flush();

@@ -255,7 +255,17 @@ void CentralClient::logThrottled(uint32_t& lastAtMs, const String& type, const S
                                  uint32_t minIntervalMs) {
   if (!eventLog_) return;
   const uint32_t now = millis();
-  if (lastAtMs != 0 && (now - lastAtMs) < minIntervalMs) return;
+  // 0.2.35 BUG-080: the prior `lastAtMs != 0` sentinel used 0 to mean
+  // "never fired before." A log line that happens to land at millis()==0
+  // (statistically: first boot tick, or post-rollover) sets lastAtMs to
+  // 0, the next call treats it as "never throttled" and re-fires —
+  // a duplicate log line once per ~49 days per call site. The
+  // 0xFFFFFFFF sentinel is cleaner: it's the maximum uint32_t value
+  // which `millis()` cannot legitimately equal (it wraps to 0 first),
+  // so it's a true "no previous fire" tag with no collision against
+  // any valid timestamp. Initialize all `lastXFailureLogAtMs_` members
+  // to UINT32_MAX in the header to match.
+  if (lastAtMs != UINT32_MAX && (now - lastAtMs) < minIntervalMs) return;
   lastAtMs = now;
   eventLog_->add(type, message);
 }
@@ -428,19 +438,41 @@ bool CentralClient::announceDevice() {
   String selectedBaseUrl;
   int code = -1;
   if (!postWithFallback("/device/announce", "", body, response, code, selectedBaseUrl)) {
-    const String detail = response.isEmpty() ? String("unknown transport error") : summarizeResponse(response);
-    Serial.print("Central announce transport failed: ");
-    Serial.println(detail);
-    logThrottled(lastAnnounceFailureLogAtMs_, "central", "Announce transport failed; backing off",
+    // 0.2.35 BUG-079: same NULL-deref pattern as the 0.2.32 heartbeat
+    // fix. Pre-fix this block built `String detail = ...summarizeResponse
+    // (response)...` then `Serial.println(detail)` — under heap pressure
+    // summarizeResponse can return a NULL-buffer String whose .c_str()
+    // crashes ROM strncmp. Mirror the 0.2.32 flow: literal Serial.println,
+    // literal logThrottled, forensic detail via diag-syslog snprintf.
+    Serial.println("Central announce transport failed");
+    logThrottled(lastAnnounceFailureLogAtMs_, "central",
+                 "Announce transport failed; backing off",
                  TRANSPORT_FAILURE_LOG_INTERVAL_MS);
+    {
+      char detailBuf[220];
+      const char* responseRaw = response.c_str();
+      snprintf(detailBuf, sizeof(detailBuf),
+               "code=%d mfb=%u resp=%.140s",
+               code, ESP.getMaxFreeBlockSize(),
+               responseRaw ? responseRaw : "(no response)");
+      DiagSyslog::sendEventCStr("announce-detail", detailBuf);
+    }
     setState("announce_transport_failed");
-    const uint32_t now = millis();
-    scheduleTransportFailureCooldown(now, false);
+    scheduleTransportFailureCooldown(millis(), false);
     return false;
   }
 
   if (code < 200 || code >= 300) {
-    if (eventLog_) eventLog_->add("central", "Announce failed (" + String(code) + "): " + summarizeResponse(response));
+    // 0.2.35 BUG-079: replace the String("X failed (" + code + "): " +
+    // summarizeResponse(response)) concat — three chained allocs in a
+    // heap-pressure-reachable path — with a stack-buffer snprintf into
+    // a C-string eventLog::add overload (literal message + the
+    // forensic detail in the diag-syslog packet).
+    char failBuf[180];
+    snprintf(failBuf, sizeof(failBuf),
+             "Announce failed (code=%d, mfb=%u)",
+             code, ESP.getMaxFreeBlockSize());
+    if (eventLog_) eventLog_->add("central", failBuf);
     setState(code == 400 ? "announce_validation_failed" : "announce_failed");
     scheduleRetry(false);
     nextAnnounceAttemptAt_ = millis() + min<uint32_t>(retryBackoffMs_, MAX_ANNOUNCE_RETRY_DELAY_MS);
@@ -533,7 +565,13 @@ bool CentralClient::announceDevice() {
     return false;
   }
 
-  if (eventLog_) eventLog_->add("central", "Unknown announce status: " + summarizeResponse(response));
+  // 0.2.35 BUG-079: stack-buffer snprintf via the const char*
+  // eventLog::add overload instead of String concat.
+  char failBuf[180];
+  snprintf(failBuf, sizeof(failBuf),
+           "Unknown announce status (mfb=%u)",
+           ESP.getMaxFreeBlockSize());
+  if (eventLog_) eventLog_->add("central", failBuf);
   setState("announce_unknown_status");
   nextAnnounceAttemptAt_ = millis() + 30000UL;
   return false;
@@ -839,11 +877,20 @@ bool CentralClient::registerDevice() {
   String selectedBaseUrl;
   int code = -1;
   if (!postWithFallback("/device/register", "", body, response, code, selectedBaseUrl)) {
-    const String detail = response.isEmpty() ? String("unknown transport error") : summarizeResponse(response);
-    Serial.print("Central register transport failed: ");
-    Serial.println(detail);
-    logThrottled(lastRegisterFailureLogAtMs_, "central", "Device registration transport failed; backing off",
+    // 0.2.35 BUG-079: mirror the 0.2.32 heartbeat fix shape.
+    Serial.println("Central register transport failed");
+    logThrottled(lastRegisterFailureLogAtMs_, "central",
+                 "Device registration transport failed; backing off",
                  TRANSPORT_FAILURE_LOG_INTERVAL_MS);
+    {
+      char detailBuf[220];
+      const char* responseRaw = response.c_str();
+      snprintf(detailBuf, sizeof(detailBuf),
+               "code=%d mfb=%u resp=%.140s",
+               code, ESP.getMaxFreeBlockSize(),
+               responseRaw ? responseRaw : "(no response)");
+      DiagSyslog::sendEventCStr("register-detail", detailBuf);
+    }
     setState("register_transport_failed");
     scheduleTransportFailureCooldown(millis(), false);
     return false;
@@ -878,9 +925,15 @@ bool CentralClient::registerDevice() {
   }
 
   if (code < 200 || code >= 300) {
+    // 0.2.35 BUG-079: replace the String concat ("X failed (" + code +
+    // "): " + summarizeResponse(...)) with a stack-buffer snprintf
+    // into the const char* eventLog::add overload.
     Serial.printf("Central register failed: %d\n", code);
-    Serial.println(response);
-    if (eventLog_) eventLog_->add("central", "Device registration failed (" + String(code) + "): " + summarizeResponse(response));
+    char failBuf[180];
+    snprintf(failBuf, sizeof(failBuf),
+             "Device registration failed (code=%d, mfb=%u)",
+             code, ESP.getMaxFreeBlockSize());
+    if (eventLog_) eventLog_->add("central", failBuf);
     setState("register_failed");
     scheduleTransportFailureCooldown(millis(), false);
     return false;
@@ -1049,11 +1102,20 @@ bool CentralClient::pollCommands() {
   int code = -1;
   if (!getWithFallback("/device/commands?device_id=" + config_->central.deviceId,
                        config_->central.deviceToken, response, code, selectedBaseUrl)) {
-    const String detail = response.isEmpty() ? String("unknown transport error") : summarizeResponse(response);
-    Serial.print("Central command poll transport failed: ");
-    Serial.println(detail);
-    logThrottled(lastPollFailureLogAtMs_, "central", "Command poll transport failed; backing off",
+    // 0.2.35 BUG-079: mirror the 0.2.32 heartbeat fix shape.
+    Serial.println("Central command poll transport failed");
+    logThrottled(lastPollFailureLogAtMs_, "central",
+                 "Command poll transport failed; backing off",
                  TRANSPORT_FAILURE_LOG_INTERVAL_MS);
+    {
+      char detailBuf[220];
+      const char* responseRaw = response.c_str();
+      snprintf(detailBuf, sizeof(detailBuf),
+               "code=%d mfb=%u resp=%.140s",
+               code, ESP.getMaxFreeBlockSize(),
+               responseRaw ? responseRaw : "(no response)");
+      DiagSyslog::sendEventCStr("poll-detail", detailBuf);
+    }
     setState("poll_transport_failed");
     scheduleTransportFailureCooldown(millis(), false);
     return false;

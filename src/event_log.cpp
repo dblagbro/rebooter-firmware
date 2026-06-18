@@ -93,6 +93,29 @@ void EventLog::add(const String& type, const String& message) {
   lastMutationMillis_ = millis();
 }
 
+
+// 0.2.35 BUG-079: char-pointer overload. Call sites that build a
+// message with `snprintf(buf, ...)` use this overload to avoid the
+// implicit `const char* → String` conversion at the call site, which
+// would allocate `strlen+1` bytes BEFORE entering add() — undermining
+// the in-function mfb<4K bail.
+void EventLog::add(const char* type, const char* message) {
+  // Always emit the diag-syslog packet so the event reaches the hub
+  // even when we bail on local persistence. DiagSyslog::sendEventCStr
+  // is a stack-only path (snprintf into a fixed buffer) and is safe
+  // at any heap state.
+  DiagSyslog::sendEventCStr(type ? type : "event", message ? message : "");
+
+  if (ESP.getMaxFreeBlockSize() < 4000) return;
+
+  // Heap is healthy enough to construct Strings — defer to the
+  // String& overload which handles trim/cap/dedup/store. The
+  // construction happens HERE (after the bail) instead of at the
+  // call site (which is the bug).
+  add(String(type ? type : "event"), String(message ? message : ""));
+}
+
+
 String EventLog::asJson() const {
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
