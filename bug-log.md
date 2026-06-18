@@ -507,6 +507,36 @@ project.
   - trim repeated failure logging on the hot path
   - rerun a small controlled soak after the next mitigation
 - status: open; this is now the primary firmware blocker
+- **2026-06-17 closure (P2 triage):** the recommended fixes have all
+  shipped across the 0.2.x line and the underlying recovery_mode
+  signal is gone from the fleet.
+  - `scheduleTransportFailureCooldown()` (introduced post-0.1.29)
+    unifies retry backoff for announce / register / heartbeat / poll
+    / firmware-check / power transport under a single `retryBackoffMs_`
+    curve, with firmware-check floored at 120s. Closes recommended
+    fix #1 + #2 (reduce amplification + widen backoff).
+  - `logThrottled()` (introduced 0.2.7-era) rate-limits each
+    transport-failure event-log line via a per-call-site
+    `lastXFailureLogAtMs_` at the 120s
+    `TRANSPORT_FAILURE_LOG_INTERVAL_MS`. Closes recommended fix #3
+    (trim repeated failure logging on the hot path).
+  - 0.2.6 EventLog RAM cap (30 entries × 80 chars) removed the heap
+    erosion source that fed the late-boot recovery cascade.
+  - 0.2.31 + 0.2.32 killed two NULL-deref crashes inside the
+    transport-fail logger itself — those crashes were a likely
+    contributor to the .48/.67/.69/.30/.225 recovery_mode results
+    captured in 2026-05-16's overnight soak.
+  - Live data 2026-06-17: zero `recovery_mode=true` heartbeats and
+    zero `device.auto_recover*` events across all fleet MACs in the
+    last 30 days. The original failure signal is gone.
+  - Soak (recommended fix #4) has effectively run continuously
+    since 0.2.34's predecessors landed (5+ weeks of fleet runtime
+    on the .190 unit alone, plus the historical .185 / .188 data
+    through 2026-06-13). No new failure signal has emerged.
+- status: **fixed across v0.2.6 / v0.2.7 / v0.2.31 / v0.2.32** —
+  closed in this triage as part of P2 on 2026-06-17. If a future
+  recovery_mode cluster reappears, file a fresh entry rather than
+  reopening this one; the failure surface has materially shifted.
 
 ## 2026-06-16 0.2.34 — BUG-077 proactive-restart burst loop (.190)
 
