@@ -3,6 +3,7 @@
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>
 #include <WiFiClientSecureBearSSL.h>
+#include "https_client_helpers.h"
 #include <ArduinoJson.h>
 
 #include "central_client.h"
@@ -103,6 +104,15 @@ static constexpr uint32_t COMPACT_HEARTBEAT_FREE_HEAP_THRESHOLD = 20000;
 // the dip. Compact-on-fragmentation lets the device shed the
 // extra alloc footprint on the cycles where it matters most.
 static constexpr uint32_t COMPACT_HEARTBEAT_MFB_THRESHOLD = 14000;
+// 0.2.37 BUG-081: hysteresis so the heartbeat doesn't flip-flop
+// between compact and verbose every cycle when fh / mfb sit near
+// either threshold. Verbose peaks slice mfb; compact lows let fh
+// recover above 20K; next cycle goes verbose again; loop. Adding
+// an exit gap (1024 bytes on each metric) breaks the oscillation —
+// the device stays compact until BOTH fh AND mfb climb a healthy
+// margin above the enter thresholds.
+static constexpr uint32_t COMPACT_HEARTBEAT_FREE_HEAP_EXIT = 21024;
+static constexpr uint32_t COMPACT_HEARTBEAT_MFB_EXIT = 15024;
 // Cap on hub base URLs attempted in a single failover cycle. With up to 10
 // configurable URLs, a fully-down list would otherwise do 10 sequential TLS
 // handshakes per cycle, which is the most expensive heap event in the
@@ -284,11 +294,24 @@ bool CentralClient::shouldIncludeReportedConfig(uint32_t now) const {
 bool CentralClient::shouldUseCompactHeartbeat() const {
   // 0.2.34 BUG-077 fix (a): trigger on EITHER low free-heap OR low
   // max-free-block. The original fh-only gate misses the .190
-  // fragmented-but-not-low scenario (fh=21K, mfb=9K) where the
-  // verbose heartbeat fragments further and pushes mfb deeper
-  // toward the proactive-restart trip line.
-  return ESP.getFreeHeap() < COMPACT_HEARTBEAT_FREE_HEAP_THRESHOLD ||
-         ESP.getMaxFreeBlockSize() < COMPACT_HEARTBEAT_MFB_THRESHOLD;
+  // fragmented-but-not-low scenario (fh=21K, mfb=9K).
+  // 0.2.37 BUG-081 fix: add hysteresis to prevent mode oscillation.
+  // Once compact, stay compact until BOTH fh AND mfb climb a healthy
+  // margin above the enter thresholds (the *_EXIT constants).
+  const uint32_t fh = ESP.getFreeHeap();
+  const uint32_t mfb = ESP.getMaxFreeBlockSize();
+  if (compactHeartbeatLatched_) {
+    if (fh >= COMPACT_HEARTBEAT_FREE_HEAP_EXIT &&
+        mfb >= COMPACT_HEARTBEAT_MFB_EXIT) {
+      compactHeartbeatLatched_ = false;
+    }
+  } else {
+    if (fh < COMPACT_HEARTBEAT_FREE_HEAP_THRESHOLD ||
+        mfb < COMPACT_HEARTBEAT_MFB_THRESHOLD) {
+      compactHeartbeatLatched_ = true;
+    }
+  }
+  return compactHeartbeatLatched_;
 }
 
 void CentralClient::maybeHeapPressureRestart() {
@@ -655,8 +678,7 @@ bool CentralClient::postWithFallback(const String& path, const String& authToken
     // (unique_ptr -> _ctx=nullptr -> _freeSSL), which 8.6h of stable-heap
     // 0.2.0 runtime on .188 proved leak-free.
     std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
-    client->setInsecure();
-    client->setBufferSizes(512, 512);
+    configureBearSSLClient(*client);
     HTTPClient http;
     const String url = buildApiUrl(baseUrl, path);
     http.setTimeout(4000);
@@ -731,8 +753,7 @@ bool CentralClient::postWithoutResponseWithFallback(const String& path, const St
     // (unique_ptr -> _ctx=nullptr -> _freeSSL), which 8.6h of stable-heap
     // 0.2.0 runtime on .188 proved leak-free.
     std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
-    client->setInsecure();
-    client->setBufferSizes(512, 512);
+    configureBearSSLClient(*client);
     HTTPClient http;
     const String url = buildApiUrl(baseUrl, path);
     http.setTimeout(4000);
@@ -808,8 +829,7 @@ bool CentralClient::getWithFallback(const String& path, const String& authToken,
     // (unique_ptr -> _ctx=nullptr -> _freeSSL), which 8.6h of stable-heap
     // 0.2.0 runtime on .188 proved leak-free.
     std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
-    client->setInsecure();
-    client->setBufferSizes(512, 512);
+    configureBearSSLClient(*client);
     HTTPClient http;
     const String url = buildApiUrl(baseUrl, path);
     http.setTimeout(4000);
@@ -1324,8 +1344,7 @@ bool CentralClient::checkFirmwareAssignment() {
 
   // 0.2.5: per-call BearSSL client (pool reverted — see postWithFallback note).
   std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure());
-  client->setInsecure();
-  client->setBufferSizes(512, 512);
+  configureBearSSLClient(*client);
   ESPhttpUpdate.rebootOnUpdate(true);
   // 0.2.17 sweep S5: prepareForPlannedRestart MUST fire before update()
   // because ESPhttpUpdate.update() with rebootOnUpdate(true) calls

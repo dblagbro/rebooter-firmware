@@ -662,7 +662,7 @@ can flip between compact and verbose modes every cycle: verbose
 peaks slice mfb, compact lows let fh recover. Each mode-switch
 costs JSON re-serialization.
 
-**Status: open.** Add hysteresis: separate "enter compact"
+**Status: fixed in 0.2.37.** Add hysteresis: separate "enter compact"
 thresholds (`fh<20K` / `mfb<14K`) from "exit compact" thresholds
 (`fh>22K AND mfb>16K`). Defer; no observed regression in the
 fleet data so far.
@@ -680,7 +680,7 @@ planned. Cleared in `checkFirmwareAssignment` on
 - The proactive heap-pressure restart path (always reaches
   `ESP.restart()` so this is fine — included for completeness).
 
-**Status: open.** Failure mode: diagnostic misattribution — a
+**Status: fixed in 0.2.37.** Failure mode: diagnostic misattribution — a
 brown-out gets logged as the planned reason on next boot. Fix:
 guarantee `clearPlannedRestart()` runs whenever the stage is set
 but the restart doesn't fire (set a stack-allocated RAII guard
@@ -701,7 +701,7 @@ plus the boilerplate around `http.setTimeout`, `http.begin`,
 `http.addHeader`, response handling, and the 9-line "0.2.5
 pool-revert" comment.
 
-**Status: open.** Real cleanup candidate. Extract into
+**Status: fixed in 0.2.37.** Real cleanup candidate. Extract into
 `scopedHttpsClient()` that returns a small RAII wrapper carrying
 the configured `BearSSL` + `HTTPClient` pair. Future TLS-buffer
 tuning changes one site instead of three. Defer to a refactor

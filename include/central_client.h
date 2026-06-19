@@ -69,6 +69,11 @@ private:
   RuntimeStatus* status_ = nullptr;
   ConfigManager* cfgMgr_ = nullptr;
   EventLog* eventLog_ = nullptr;
+  // 0.2.37 BUG-081: hysteresis latch for shouldUseCompactHeartbeat()
+  // so a device near both thresholds doesn't oscillate verbose↔compact
+  // each cycle. Sticky-once-set; clears when BOTH fh and mfb climb a
+  // ≥1024-byte margin above the enter thresholds.
+  mutable bool compactHeartbeatLatched_ = false;
   RelayController* relay_ = nullptr;
   WifiManagerService* wifi_ = nullptr;
   PowerMonitor* power_ = nullptr;

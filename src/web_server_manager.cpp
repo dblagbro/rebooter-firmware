@@ -3,6 +3,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <WiFiClientSecureBearSSL.h>
+#include "https_client_helpers.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include "web_server_manager.h"
@@ -1325,8 +1326,7 @@ static void addCentralDiagnostic(JsonObject target, const String& baseUrl) {
   if (tcpOk) tcp.stop();
 
   std::unique_ptr<BearSSL::WiFiClientSecure> secure(new BearSSL::WiFiClientSecure());
-  secure->setInsecure();
-  secure->setBufferSizes(512, 512);
+  configureBearSSLClient(*secure);
   HTTPClient http;
   const String versionUrl = baseUrl + (baseUrl.endsWith("/") ? "" : "/") + "api/v1/version";
   const bool beginOk = http.begin(*secure, versionUrl);
