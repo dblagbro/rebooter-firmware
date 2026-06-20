@@ -538,6 +538,43 @@ project.
   recovery_mode cluster reappears, file a fresh entry rather than
   reopening this one; the failure surface has materially shifted.
 
+## 2026-06-20 BUG-085 — proactive-restart burst still firing 19×/24h on 0.2.36 — fixed in 0.2.38
+
+After 0.2.36's BUG-084 semantic flip, .190 still logged 19 proactive
+restarts in 24h. Trajectory data confirmed the discriminator IS
+working correctly — it sees real ≥1024B drops (single-event BearSSL
+allocations dropping mfb 18184 → 13472) and fires.
+
+The deeper issue: the 30-min `HEAP_PRESSURE_MIN_UPTIME_S` gate is
+the actual cadence. mfb is sustained sub-threshold from boot on
+this device; the OUTER debounce passes the moment the gate clears;
+the discriminator correctly identifies erosion; we fire. Reboot,
+repeat — every 30 minutes for 24+ hours.
+
+The fix is NOT smarter discrimination — the discriminator is right.
+The fix is a burst-suppressor: if the PRIOR boot was already a
+proactive restart, give the device 4 hours of runtime before the
+next proactive fire is eligible. Caps the worst-case cadence at
+one proactive every ~4.5 hours (30-min gate + 4h suppression)
+instead of every 30 min.
+
+**Protection preserved:** the FIRST proactive after any boot still
+fires after 30 min of sustained pressure. The .185 WiFi-SDK
+NULL-deref scenario fired within 80s of sustained sub-13K mfb —
+the protection still wins by a factor of ~22x on cold boots.
+
+**Sanity check:** .190 has been crash-free since 0.2.34 install
+(no Hardware Watchdog, no Exception). The proactive was firing on
+DEFENSIVE pressure not actual incidents. The burst-suppressor
+trades modest WiFi-SDK risk in hour 1-4 of any post-proactive run
+against eliminating the 30-min reboot loop.
+
+- size: RAM 57.0% / Flash 67.5% (no change)
+- build: clean
+- staging: 0.2.38-dev-central-safe published to dev channel
+- status: open; need .190 promotion + 24h soak to verify cadence
+  drops from 19/day to ≤6/day.
+
 ## 2026-06-18 BUG-084 — 0.2.34 trajectory discriminator misclassifies FLAT mfb as erosion — fixed in 0.2.36
 
 The 0.2.34 BUG-077 fix (b) — `heapTrajectoryRecovering()` — had the

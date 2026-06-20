@@ -325,6 +325,35 @@ void CentralClient::maybeHeapPressureRestart() {
   if (status_->uptimeSeconds < HEAP_PRESSURE_MIN_UPTIME_S) return;
   if (status_->recoveryMode) return;
 
+  // 0.2.38 BUG-085 fix: post-proactive-restart burst suppressor.
+  // .190 data captured 2026-06-20: device fires proactive every ~30
+  // min — exactly the HEAP_PRESSURE_MIN_UPTIME_S gate. The mfb is
+  // sustained sub-13K from boot; the OUTER debounce passes the moment
+  // the gate clears; the discriminator correctly sees real erosion
+  // (single-shot drops from baseline) and fires. Result: 19 reboots
+  // in 24h on a device that hasn't actually crashed WiFi-SDK once.
+  //
+  // The fix: if the PRIOR boot was already a proactive restart, the
+  // problem isn't acute — the device just recovered from the same
+  // pressure pattern. Give it 4 hours of runtime to either prove
+  // it's safe (no WiFi-SDK crash → cap fires at 6/24h) or to fail
+  // naturally (Exception/WDT reset captured via CrashRecorder, fresh
+  // boot, fresh proactive eligibility). Caps the worst-case burst
+  // cadence at one fire every ~4.5h instead of every ~30 min.
+  //
+  // Note: this does NOT reduce protection against the original
+  // .185 WiFi-SDK NULL-deref scenario. That bug fired within 80s of
+  // sustained sub-13K mfb. The FIRST proactive after any boot still
+  // fires after 30 min of pressure — 80s vs 30 min, the protection
+  // wins by a factor of 22.
+  static constexpr uint32_t PROACTIVE_BURST_SUPPRESS_AFTER_MS = 4UL * 60UL * 60UL * 1000UL;
+  const bool priorWasProactive =
+      status_->lastPlannedRestartReason == "heap_pressure_proactive";
+  if (priorWasProactive &&
+      static_cast<uint32_t>(status_->uptimeSeconds) * 1000UL < PROACTIVE_BURST_SUPPRESS_AFTER_MS) {
+    return;
+  }
+
   const uint32_t mfb = ESP.getMaxFreeBlockSize();
   if (mfb >= HEAP_PRESSURE_MFB_THRESHOLD) {
     heapPressureSampleCount_ = 0;
