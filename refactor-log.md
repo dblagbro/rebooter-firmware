@@ -1,5 +1,74 @@
 # Refactor Log
 
+## 2026-06-22 — split heap-pressure logic out of central_client.cpp
+
+- **Releases included:** v0.2.40
+- **Scope:** behavior-preserving split of the highest-churn surface in
+  the firmware. `src/central_client.cpp` (1778 LOC) had absorbed every
+  recent operational fix — BUG-077 / BUG-079 / BUG-080 / BUG-081 /
+  BUG-082 / BUG-083 / BUG-084 / BUG-085 (8 of the last 9 firmware
+  bugs). The heap-pressure / proactive-restart / trajectory-
+  discriminator / compact-heartbeat subsystem is internally cohesive
+  and only weakly coupled to the rest of the file. Moving it gives
+  future heap-pressure fixes their own focused diff surface.
+- **Key changes:**
+  - New `src/central_client_heap.cpp` (298 LOC) carrying
+    `shouldUseCompactHeartbeat`, `maybeHeapPressureRestart`,
+    `heapTrajectoryRecovering`, `sampleHeap`,
+    `serializeHeapTrajectory`, and the relevant `HEAP_PRESSURE_*` /
+    `COMPACT_HEARTBEAT_*` / `HTTPS_SETTLE_WINDOW_MS` constants.
+  - `central_client.cpp` retains protocol, transport plumbing,
+    command execution, and the main `loop()`. Trimmed 1778 → 1522 LOC.
+- **Architectural decisions:**
+  - Same `CentralClient` class, body split across multiple .cpp files.
+    C++ standard pattern; the linker resolves methods regardless of
+    which translation unit defines them. Avoids the larger refactor
+    of extracting a new class (would require dependency injection +
+    behavior-change risk).
+  - Constants moved with the methods that use them (verified by grep
+    that no other file references them). No cross-file constant
+    sharing. If a future fix needs both heap and transport constants
+    together, promote to class-level `static constexpr` members.
+  - Headers untouched. All method declarations were already in
+    `central_client.h`; the linker stitches the bodies.
+- **Files impacted:**
+  - 1 file added: `src/central_client_heap.cpp` (298 LOC)
+  - 1 file modified: `src/central_client.cpp` (-256 LOC)
+  - 1 file modified: `include/firmware_version.h` (version bump)
+  - 2 docs updated: `architecture.md`, `refactor-log.md`
+- **Risks:**
+  - Binary equivalence: within noise. RAM unchanged at 57.0%, Flash
+    67.5% (+192 bytes / +0.03%). Growth is extra translation-unit
+    boilerplate (separate anonymous-namespace + section overhead).
+  - Class-state coupling: every moved method accesses the same
+    private members it did before (`compactHeartbeatLatched_`,
+    `heapRing_*`, `heapPressureSampleCount_`, etc.) — those are on
+    the class, accessible from any of its .cpp files. Cross-file
+    `this->method()` calls (e.g. `maybeHeapPressureRestart` calling
+    `heapTrajectoryRecovering`) use the standard member-function
+    sequence; no behavioral change.
+  - `sampleHeap` reads `lastHttpsCompletedAtMs_` which is stamped
+    by transport methods still in `central_client.cpp`. Cross-file
+    access via shared class state — same as before the split.
+- **Remaining issues:**
+  - `web_server_manager.cpp` is now the largest .cpp at 1955 LOC.
+    Most-impactful follow-up: pull embedded HTML/CSS/JS asset blobs
+    (~600 LOC of `const char[]`) into `src/web_assets.cpp` — those
+    don't reference class members; trivial extraction.
+  - `central_client.cpp` still 1522 LOC. Next slice when transport
+    churns: extract `postWithFallback` / `getWithFallback` /
+    `postWithoutResponseWithFallback` + their retry helpers into
+    `src/central_client_transport.cpp` (~250 LOC).
+  - `config_manager.cpp` (682 LOC) deferred — recent BUG-086 fix
+    landed cleanly; less recent churn justifies later attention.
+- **Next recommended targets** (priority order):
+  1. `web_server_manager.cpp` embedded assets → `web_assets.cpp`
+     (~600 LOC, trivial, no class-member access).
+  2. `central_client.cpp` transport plumbing →
+     `central_client_transport.cpp` (defer until transport churns).
+  3. `config_manager.cpp` validation / persistence / recovery split
+     (defer; smaller LOC, less recent churn).
+
 ## 2026-05-14
 
 - scope of refactor:

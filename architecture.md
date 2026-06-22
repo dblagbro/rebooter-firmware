@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Last updated: 2026-05-14
+Last updated: 2026-06-22
 
 ## Purpose
 
@@ -47,9 +47,16 @@ and central-hub integration.
      reboot back into a normal boot instead of lingering in recovery mode
 
 6. central integration
-   - `src/central_client.cpp`
-   - heartbeat, announce/register, command polling, firmware checks,
-     and power upload
+   - `src/central_client.cpp` — heartbeat, announce/register, command
+     polling, firmware checks, and power upload (the protocol surface)
+   - `src/central_client_heap.cpp` — heap-pressure proactive-restart,
+     trajectory discriminator, compact-heartbeat hysteresis, heap
+     sampling. Same `CentralClient` class, split across translation
+     units in v0.2.40 to isolate the hottest churn surface (8 of the
+     last 9 firmware bugs lived here: BUG-077/079/080/081/082/083/084
+     /085). PlatformIO compiles every .cpp under src/; the linker
+     stitches the class together. Binary unchanged within noise (192
+     bytes, < 0.03%).
 
 7. status and reporting
    - `src/status_payload.cpp`
@@ -103,12 +110,20 @@ after OTA, not only against repo files or proxy-served copies.
 
 ## Current known architectural debt
 
-1. `src/web_server_manager.cpp` is still too large and mixes route
-   registration, response shaping, and embedded assets.
-2. `src/central_client.cpp` still mixes enrollment, transport, command
-   handling, heartbeat, and firmware work.
-3. `src/config_manager.cpp` still combines validation, persistence, and
-   recovery orchestration.
+1. `src/web_server_manager.cpp` (1955 LOC) is still too large and mixes
+   route registration, response shaping, and embedded assets. Next
+   target for the splitting pattern proven in v0.2.40 — pull embedded
+   HTML/CSS/JS assets into `src/web_assets.cpp` first (those don't
+   reference class members; trivial extraction).
+2. `src/central_client.cpp` (1522 LOC after v0.2.40 heap split) — still
+   mixes enrollment, transport plumbing, heartbeat, command handling,
+   and firmware work. Next slice when transport churns: pull
+   `postWithFallback` / `getWithFallback` /
+   `postWithoutResponseWithFallback` and their shared retry-state
+   into `src/central_client_transport.cpp` (~250 LOC).
+3. `src/config_manager.cpp` (682 LOC) still combines validation,
+   persistence, and recovery orchestration. Smaller scope; defer
+   until the next config-shape change.
 
 ## Near-term architectural direction
 
