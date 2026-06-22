@@ -268,8 +268,29 @@ static bool loadFromPath(const char* path, AppConfig& out) {
   const size_t maxSafeBytes = 8192;
   const size_t fileSize = f.size();
   if (fileSize == 0 || fileSize > maxSafeBytes) {
+    // 0.2.39 BUG-086 fix: DO NOT delete the file here. The pre-fix
+    // `LittleFS.remove(path)` was the WiFi-credential-loss vector
+    // operators have been hitting for weeks (physical-eyes resets
+    // every few days on the heavy-cycling units). Sequence:
+    //   1. Reboot lands mid-save() → leaves /config.json.tmp or a
+    //      0-byte fragment on disk.
+    //   2. Next boot calls loadFromPath() on a stale 0-byte file
+    //      (could be primary OR LKG, depending on which save() step
+    //      was interrupted).
+    //   3. Pre-fix: file gets DELETED here. The recovery chain in
+    //      load() now has one fewer fallback. A second unlucky
+    //      reboot can wipe the other file the same way.
+    //   4. After both are gone, load() falls into the
+    //      `out = AppConfig()` defaults — which have an EMPTY
+    //      `wifi.savedNetworks` list — then save() persists the
+    //      empty-creds config. Device boots into captive portal.
+    //
+    // Now: return false (recovery chain still gets to try the
+    // alternate), but LEAVE the truncated file on disk. A
+    // subsequent successful save() will atomically replace it
+    // through the rename. Only delete on confirmed successful
+    // replacement, not on first-glance malformation.
     f.close();
-    LittleFS.remove(path);
     return false;
   }
 

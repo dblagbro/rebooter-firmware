@@ -538,6 +538,64 @@ project.
   recovery_mode cluster reappears, file a fresh entry rather than
   reopening this one; the failure surface has materially shifted.
 
+## 2026-06-21 BUG-086 — WiFi-credential loss on reboot — fixed in 0.2.39
+
+**Operator-reported 2026-06-21**: "why are these rebooters needing
+to be reset on wifi all the time? i'm resetting 3 now."
+
+Live diagnosis traced to `config_manager.cpp::loadFromPath()`
+line 270-274. The pre-fix code self-destructed any config file
+with size 0 or > 8192 bytes:
+
+    if (fileSize == 0 || fileSize > maxSafeBytes) {
+      f.close();
+      LittleFS.remove(path);  // ← active aggression
+      return false;
+    }
+
+**Failure chain:**
+1. Save sequence (config_manager.cpp:531-539) is atomic only when
+   the rename steps complete. A reboot during the window between
+   `LittleFS.rename(configPath_, LAST_KNOWN_GOOD_PATH)` and
+   `LittleFS.rename(TEMP_CONFIG_PATH, configPath_)` leaves
+   `/config.json` missing and `/config.tmp` and `/config.lkg.json`
+   on disk.
+2. Next boot, `load()` sees `/config.json` missing, falls back to
+   LKG. **If the LKG file is itself 0-byte** (from a prior similar
+   interruption), loadFromPath enters the size-check branch and
+   DELETES the LKG too.
+3. Now BOTH primary and LKG are gone. load() falls through to
+   `out = AppConfig()` defaults (line 525) — which have an empty
+   `wifi.savedNetworks` list — and `save()` writes the empty-creds
+   config to disk.
+4. Device boots with no WiFi credentials, enters captive portal,
+   requires operator physical reset + re-provision.
+
+**Amplifier**: the BUG-077 / 0.2.36-era proactive-restart burst
+loop. .190 logged 19 reboots in 24h on 0.2.36. Each reboot has
+some probability of landing mid-save; with 19/day the credential-
+loss event compounds across the fleet. BUG-085's 4h cooldown
+(0.2.38) reduces the reboot frequency but doesn't fix the
+underlying credential-wipe vector.
+
+**Fix in 0.2.39**: don't delete malformed files from
+`loadFromPath()`. Return false (recovery chain still tries the
+alternate), leave the truncated file on disk. A subsequent
+successful save() atomically replaces it via the rename
+sequence. Only delete on confirmed-good replacement, not on
+first-glance malformation. Self-healing without self-destruction.
+
+The flash-wear angle (different root cause, same symptom) is
+unchanged by this fix — a genuinely-corrupt LKG that returns
+`DeserializationError` from ArduinoJson still triggers the
+defaults fallback. That's a separate hardening pass for a
+later ship.
+
+- size: built and verified
+- staging: 0.2.39-dev-central-safe to be published + assigned to .190
+- status: open; need .190 promotion + soak + zero-credential-loss
+  observations across the fleet to call it fixed.
+
 ## 2026-06-20 BUG-085 — proactive-restart burst still firing 19×/24h on 0.2.36 — fixed in 0.2.38
 
 After 0.2.36's BUG-084 semantic flip, .190 still logged 19 proactive
