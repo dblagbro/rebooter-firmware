@@ -1,5 +1,73 @@
 # Refactor Log
 
+## 2026-06-22 — extract embedded web assets out of web_server_manager.cpp
+
+- **Releases included:** v0.2.41
+- **Scope:** the second of the three "recommended next" targets from
+  the v0.2.40 entry. `src/web_server_manager.cpp` was the largest .cpp
+  in the tree at 1955 LOC; ~1230 of those were three embedded
+  `R"HTML(..)HTML"` / `R"CSS(..)CSS"` / `R"JS(..)JS"` raw-string blobs
+  serving as fallback UI when LittleFS lacks the matching file. The
+  blobs don't reference class members, so the extraction is trivial
+  and behavior-preserving.
+- **Key changes:**
+  - New `src/web_assets.cpp` (1246 LOC) carrying:
+    - `FALLBACK_INDEX_HTML` (255 LOC of HTML)
+    - `FALLBACK_STYLE_CSS` (380 LOC of CSS)
+    - `FALLBACK_APP_JS` (594 LOC of JS)
+    - All still `PROGMEM`-attributed; `static` dropped to give them
+      external linkage instead.
+  - New `include/web_assets.h` (15 LOC) declaring each blob
+    `extern const char[]` so `web_server_manager.cpp` can reference
+    them across the translation-unit boundary.
+  - `src/web_server_manager.cpp` trimmed 1955 → 725 LOC. Now contains
+    only includes, the static service pointers, route registration,
+    response shaping, and handler bodies. The single
+    `#include "web_assets.h"` line replaces the 1230 LOC of blobs.
+- **Architectural decisions:**
+  - Blob storage stays in flash (`PROGMEM`); RAM cost is identical.
+    Symbol references in `serveFileOrFallback()` now resolve via the
+    linker instead of intra-file lookup — same instructions emitted.
+  - Header-only extern declarations rather than copying the blobs
+    into the header: ArduinoCore's preprocessor would unroll the
+    multi-kilobyte string literals into every translation unit
+    including the header, blowing up build time and section overhead.
+  - Did NOT also split handler bodies. The fallback assets are the
+    high-LOC noise; the handlers themselves cluster naturally by URL
+    and don't need further splitting at 725 LOC.
+- **Files impacted:**
+  - 2 files added: `src/web_assets.cpp` (1246 LOC), `include/web_assets.h` (15 LOC)
+  - 1 file modified: `src/web_server_manager.cpp` (-1230 LOC, now 725)
+  - 1 file modified: `include/firmware_version.h` (version bump)
+  - 2 docs updated: `architecture.md`, `refactor-log.md`
+- **Risks:**
+  - Binary equivalence: **bit-identical body size.** RAM 57.0%
+    unchanged, Flash 67.5% / 705405 bytes unchanged from v0.2.40.
+    PROGMEM symbols moved between translation units; the linker
+    places them in the same flash section regardless. No
+    behavioral change possible from this kind of move.
+  - The `static` keyword was dropped to enable cross-file linkage.
+    This exposes the symbol names in the .o's exported symbol table —
+    a build-system observable, not a runtime concern. No name
+    collisions because nothing else in the codebase uses
+    `FALLBACK_INDEX_HTML` / `FALLBACK_STYLE_CSS` / `FALLBACK_APP_JS`.
+- **Remaining issues:**
+  - `web_server_manager.cpp` at 725 LOC is back under the soft target
+    for catch-all files. Further per-domain handler splits could be
+    considered (relay handlers vs config vs OTA vs diagnostics) but
+    only when a new domain surface lands — premature otherwise.
+  - `central_client.cpp` still 1522 LOC. Next slice when transport
+    churns: extract `postWithFallback` family into
+    `central_client_transport.cpp` per the v0.2.40 entry.
+  - `config_manager.cpp` (682 LOC) still deferred.
+- **Next recommended targets** (priority order):
+  1. `central_client.cpp` transport plumbing →
+     `central_client_transport.cpp` (defer until transport churns).
+  2. `config_manager.cpp` validation / persistence / recovery split
+     (defer; smaller LOC + less recent churn).
+  3. Handler-per-domain split inside `web_server_manager.cpp`
+     (defer; not justified until 725 LOC grows further).
+
 ## 2026-06-22 — split heap-pressure logic out of central_client.cpp
 
 - **Releases included:** v0.2.40

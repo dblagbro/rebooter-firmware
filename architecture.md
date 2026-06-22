@@ -27,9 +27,15 @@ and central-hub integration.
      recovery strikes
 
 3. local control plane
-   - `src/web_server_manager.cpp`
-   - serves the local web UI, local API, OTA upload endpoint, and
-     recovery/system actions
+   - `src/web_server_manager.cpp` — route registration, response shaping,
+     handler bodies for the local web UI / local API / OTA upload /
+     recovery+system actions
+   - `src/web_assets.cpp` (+ `include/web_assets.h`) — the embedded
+     fallback HTML/CSS/JS blobs served when LittleFS doesn't have the
+     matching file at `/data/`. Split out of web_server_manager.cpp in
+     v0.2.41 (1955 → 725 LOC for the manager). Per "UI serving model"
+     below, fallback assets must stay behaviorally aligned with the
+     `/data/` versions.
    - public surfaces must stay intentionally limited
    - protected surfaces use `X-Rebooter-Auth`
 
@@ -110,11 +116,12 @@ after OTA, not only against repo files or proxy-served copies.
 
 ## Current known architectural debt
 
-1. `src/web_server_manager.cpp` (1955 LOC) is still too large and mixes
-   route registration, response shaping, and embedded assets. Next
-   target for the splitting pattern proven in v0.2.40 — pull embedded
-   HTML/CSS/JS assets into `src/web_assets.cpp` first (those don't
-   reference class members; trivial extraction).
+1. `src/web_server_manager.cpp` was 1955 LOC; v0.2.41 extracted the
+   ~1230 LOC of embedded HTML/CSS/JS into `src/web_assets.cpp`,
+   trimming the manager to 725 LOC. Manager still mixes route
+   registration, response shaping, and handler bodies — but at a
+   tractable size. Defer further splits (e.g. handler-per-domain)
+   until a new feature surface lands.
 2. `src/central_client.cpp` (1522 LOC after v0.2.40 heap split) — still
    mixes enrollment, transport plumbing, heartbeat, command handling,
    and firmware work. Next slice when transport churns: pull
