@@ -538,6 +538,49 @@ project.
   recovery_mode cluster reappears, file a fresh entry rather than
   reopening this one; the failure surface has materially shifted.
 
+## 2026-06-30 BUG-087 — walkCandidates skips scan-absent SSIDs including hidden — fixed in 0.2.42
+
+Operator-reported 2026-06-30: "if the rebooters are supposed to have
+2 built-in wifi networks, one of which i keep having to rejoin them
+to, why do i have to keep rejoining them to it?"
+
+Root cause: `wifi_manager.cpp::walkCandidates()` used the boot-time
+`WiFi.scanNetworks()` result as a HARD GATE. Any candidate SSID not
+in the scan result was skipped ("Skipping absent SSID" in the diag
+log), even if the SSID was actually reachable.
+
+Two failure modes fell out of that:
+1. `scanNetworks()` on the ESP8266 is unreliable — busy 2.4 GHz,
+   weaker beacon APs, or partial-scan results routinely under-report.
+2. **Hidden SSIDs never show up in a scan.** A built-in network with
+   broadcast disabled was permanently unreachable at boot until
+   captive-portal re-provisioning. Every proactive-restart cycle
+   (still firing occasionally on the fleet even with BUG-085's 4h
+   cooldown) rolled the credential-loss dice again.
+
+Combined with `begin()` dropping to `State::Portal` on
+walkCandidates failure — and `loop()` returning early when in
+Portal state so the runtime supervisor never re-tries — the device
+would sit in captive portal until manually re-provisioned. That's
+the "have to keep rejoining" symptom.
+
+**Fix in 0.2.42**: two-pass walk.
+- Pass 1: scan-flagged-visible candidates only (preserves the
+  pre-fix fast path — ~3s to connect on the common happy case).
+- Pass 2: candidates the scan flagged as absent — try them anyway.
+  Catches hidden SSIDs + scan-underreport cases. Skipped entirely
+  if the scan itself failed (Pass 1 already tried everyone).
+
+Worst case (fully cold boot, all candidates absent): (2 built-in +
+saved) × 15s ≈ 60-105s before falling through to captive portal.
+Common case unchanged from prior behavior. Steady-state cost zero.
+
+- size: built and verified
+- staging: 0.2.42-dev-central-safe to be published + assigned to all
+  3 fleet devices (.185, .188, .190)
+- status: open; verify by watching a fleet reboot cycle and
+  confirming no captive-portal drops on units currently on 0.2.39.
+
 ## 2026-06-21 BUG-086 — WiFi-credential loss on reboot — fixed in 0.2.39
 
 **Operator-reported 2026-06-21**: "why are these rebooters needing

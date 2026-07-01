@@ -86,9 +86,31 @@ bool WifiManagerService::attemptCandidate(const Candidate& candidate) {
 bool WifiManagerService::walkCandidates() {
   if (candidates_.empty()) return false;
 
-  // One boot-time scan so we only attempt SSIDs actually present, avoiding a
-  // full per-network timeout on absent networks. The scan result is freed
-  // immediately. If the scan fails we fall back to attempting every candidate.
+  // 0.2.42 fix: two-pass walk to unblock hidden-SSID + scan-missed cases.
+  //
+  // Pre-fix: `WiFi.scanNetworks()` was treated as a hard gate — any candidate
+  // not returned by the scan was skipped ("Skipping absent SSID"). Two
+  // failure modes fell out of that:
+  //   1. `scanNetworks()` on the ESP8266 is unreliable — busy 2.4 GHz, weaker
+  //      beacon APs, or partial-scan results routinely miss networks that
+  //      ARE in range.
+  //   2. **Hidden SSIDs (broadcast disabled) never show up in scan results
+  //      at all**, so a hidden built-in network was permanently unreachable
+  //      until captive-portal re-provisioning. That was the operator's
+  //      2026-06-30 "why do I keep having to rejoin them to it" symptom.
+  //
+  // Now: Pass 1 attempts candidates the scan flagged as visible (fast happy
+  // path — same behavior as before on the common case, ~3s to connect on
+  // the first visible candidate). If Pass 1 fails AND we have a scan
+  // result, Pass 2 tries the remaining candidates anyway — costs at most
+  // one extra connect-timeout budget per skipped candidate, runs at most
+  // once per boot. If the scan itself failed (return ≤0), skip Pass 1 and
+  // go straight to Pass 2's "try everything" behavior.
+  //
+  // Worst case (fully cold boot, all candidates absent): (2 built-in +
+  // saved) × 15s ≈ 60-105s. On the common case the walk exits at the
+  // first successful attempt in Pass 1, unchanged from prior behavior.
+
   bool haveScan = false;
   int scanCount = WiFi.scanNetworks();
   std::vector<String> visibleSsids;
@@ -100,20 +122,32 @@ bool WifiManagerService::walkCandidates() {
   }
   WiFi.scanDelete();
 
-  for (const auto& candidate : candidates_) {
-    if (haveScan) {
-      bool present = false;
-      for (const auto& ssid : visibleSsids) {
-        if (ssid == candidate.ssid) { present = true; break; }
-      }
-      if (!present) {
-        Serial.print("Skipping absent SSID: ");
-        Serial.println(candidate.ssid);
-        continue;
-      }
+  auto scanFlaggedVisible = [&](const Candidate& c) -> bool {
+    if (!haveScan) return true;  // no scan → treat everyone as "worth trying"
+    for (const auto& ssid : visibleSsids) {
+      if (ssid == c.ssid) return true;
     }
+    return false;
+  };
+
+  // Pass 1: scan-visible candidates only. Preserves the pre-fix fast path.
+  for (const auto& candidate : candidates_) {
+    if (!scanFlaggedVisible(candidate)) continue;
     if (attemptCandidate(candidate)) return true;
   }
+
+  // Pass 2: candidates the scan flagged as absent — try them anyway. This
+  // catches hidden SSIDs and scan-underreports. Skipped entirely if the
+  // scan failed (Pass 1 already tried everyone).
+  if (haveScan) {
+    for (const auto& candidate : candidates_) {
+      if (scanFlaggedVisible(candidate)) continue;  // already tried in Pass 1
+      Serial.print("Retrying scan-absent SSID: ");
+      Serial.println(candidate.ssid);
+      if (attemptCandidate(candidate)) return true;
+    }
+  }
+
   return false;
 }
 
