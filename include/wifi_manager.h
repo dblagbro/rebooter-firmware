@@ -52,6 +52,14 @@ public:
   const String& latestScanSummary() const { return periodicScanSummary_; }
   uint32_t latestScanUptimeSeconds() const { return periodicScanUptimeSeconds_; }
 
+  // 0.2.43 (BUG-087 follow-up): boot walk decision trace. Serial.print
+  // is invisible on prod (Sonoff S31 = no accessible UART), so capture
+  // walk decisions into a small buffer that main.cpp emits over
+  // DiagSyslog AFTER WiFi comes up. Empty until begin() runs.
+  const String& walkTrace() const { return walkTrace_; }
+  uint16_t walkAttempts() const { return walkAttempts_; }
+  bool walkFellToPortal() const { return walkFellToPortal_; }
+
 private:
   struct Candidate {
     String ssid;
@@ -72,6 +80,9 @@ private:
   String apName_;
 
   std::vector<Candidate> candidates_;
+  String walkTrace_;                          // 0.2.43 walk decision log
+  uint16_t walkAttempts_ = 0;                 // 0.2.43 count of attemptCandidate calls
+  bool walkFellToPortal_ = false;             // 0.2.43 true if begin() went to portal
   uint32_t connectTimeoutMs_ = 15000;
   uint32_t lastLinkOkMs_ = 0;
   uint32_t nextReconnectAttemptMs_ = 0;

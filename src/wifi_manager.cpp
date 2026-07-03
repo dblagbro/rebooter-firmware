@@ -83,8 +83,33 @@ bool WifiManagerService::attemptCandidate(const Candidate& candidate) {
   return false;
 }
 
+namespace {
+void appendTrace(String& trace, const char* msg) {
+  if (trace.length() > 400) return;  // cap so we fit in one UDP packet
+  if (trace.length() > 0) trace += F(";");
+  trace += msg;
+}
+void appendTraceKV(String& trace, const char* key, const String& val) {
+  if (trace.length() > 400) return;
+  if (trace.length() > 0) trace += F(";");
+  trace += key;
+  trace += F("=");
+  trace += val;
+}
+void appendTraceKV(String& trace, const char* key, int val) {
+  if (trace.length() > 400) return;
+  if (trace.length() > 0) trace += F(";");
+  trace += key;
+  trace += F("=");
+  trace += String(val);
+}
+}  // namespace
+
 bool WifiManagerService::walkCandidates() {
-  if (candidates_.empty()) return false;
+  if (candidates_.empty()) {
+    appendTrace(walkTrace_, "no_candidates");
+    return false;
+  }
 
   // 0.2.42 fix: two-pass walk to unblock hidden-SSID + scan-missed cases.
   //
@@ -112,7 +137,9 @@ bool WifiManagerService::walkCandidates() {
   // first successful attempt in Pass 1, unchanged from prior behavior.
 
   bool haveScan = false;
+  uint32_t scanStart = millis();
   int scanCount = WiFi.scanNetworks();
+  uint32_t scanMs = millis() - scanStart;
   std::vector<String> visibleSsids;
   if (scanCount > 0) {
     haveScan = true;
@@ -121,6 +148,9 @@ bool WifiManagerService::walkCandidates() {
     }
   }
   WiFi.scanDelete();
+
+  appendTraceKV(walkTrace_, "scan_ms", (int)scanMs);
+  appendTraceKV(walkTrace_, "scan_n", scanCount);
 
   auto scanFlaggedVisible = [&](const Candidate& c) -> bool {
     if (!haveScan) return true;  // no scan → treat everyone as "worth trying"
@@ -133,7 +163,17 @@ bool WifiManagerService::walkCandidates() {
   // Pass 1: scan-visible candidates only. Preserves the pre-fix fast path.
   for (const auto& candidate : candidates_) {
     if (!scanFlaggedVisible(candidate)) continue;
-    if (attemptCandidate(candidate)) return true;
+    walkAttempts_++;
+    String tag = String("p1:") + candidate.ssid;
+    appendTrace(walkTrace_, tag.c_str());
+    uint32_t t = millis();
+    bool ok = attemptCandidate(candidate);
+    appendTraceKV(walkTrace_, "ms", (int)(millis() - t));
+    if (ok) {
+      appendTrace(walkTrace_, "OK");
+      return true;
+    }
+    appendTrace(walkTrace_, "FAIL");
   }
 
   // Pass 2: candidates the scan flagged as absent — try them anyway. This
@@ -142,9 +182,17 @@ bool WifiManagerService::walkCandidates() {
   if (haveScan) {
     for (const auto& candidate : candidates_) {
       if (scanFlaggedVisible(candidate)) continue;  // already tried in Pass 1
-      Serial.print("Retrying scan-absent SSID: ");
-      Serial.println(candidate.ssid);
-      if (attemptCandidate(candidate)) return true;
+      walkAttempts_++;
+      String tag = String("p2:") + candidate.ssid;
+      appendTrace(walkTrace_, tag.c_str());
+      uint32_t t = millis();
+      bool ok = attemptCandidate(candidate);
+      appendTraceKV(walkTrace_, "ms", (int)(millis() - t));
+      if (ok) {
+        appendTrace(walkTrace_, "OK");
+        return true;
+      }
+      appendTrace(walkTrace_, "FAIL");
     }
   }
 
@@ -243,6 +291,10 @@ bool WifiManagerService::begin(const String& apName, AppConfig* config,
   state_ = State::Init;
 
   buildCandidateList(config);
+  walkTrace_ = String();
+  walkAttempts_ = 0;
+  walkFellToPortal_ = false;
+  appendTraceKV(walkTrace_, "cand_n", (int)candidates_.size());
 
   // Boot-time state machine: saved networks -> dev networks -> AP portal.
   if (!forcePortal) {
@@ -254,6 +306,24 @@ bool WifiManagerService::begin(const String& apName, AppConfig* config,
       lastLinkOkMs_ = millis();
       return true;
     }
+
+    // 0.2.43 (BUG-087 follow-up): don't drop to portal on the first
+    // walk failure. The scan is unreliable enough that a single bad
+    // scan combined with slow AP association can wipe both passes.
+    // Wait 3s (radio cooldown / DHCP settle / AP beacon window) and
+    // walk one more time before surrendering to the portal.
+    appendTrace(walkTrace_, "retry");
+    delay(3000);
+    yield();
+    if (walkCandidates()) {
+      captivePortal_ = false;
+      setupApName_ = ProvisioningConfig::setupApName(ESP.getChipId());
+      state_ = State::Connected;
+      lastLinkOkMs_ = millis();
+      return true;
+    }
+    walkFellToPortal_ = true;
+    appendTrace(walkTrace_, "portal_fallback");
     Serial.println("All saved and built-in Wi-Fi attempts failed; falling back to portal.");
   }
 

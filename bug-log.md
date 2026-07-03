@@ -538,6 +538,41 @@ project.
   recovery_mode cluster reappears, file a fresh entry rather than
   reopening this one; the failure surface has materially shifted.
 
+## 2026-07-02 BUG-087 follow-up — walk-decision visibility + retry — 0.2.43
+
+Operator report 2026-07-02: "i just re-added 2 devices to wifi again
+manually that didn't auto-join voipguru" — despite 0.2.42's two-pass
+walk being live fleet-wide.
+
+Impossible to root-cause from telemetry: `walkCandidates()` logs its
+decisions via `Serial.print` only, and Sonoff S31 production units
+have no accessible UART. Which pass tried which SSID, how long the
+scan took, and whether the retry saved the boot — all invisible.
+
+0.2.43 ships two things:
+
+1. **Walk-decision trace** captured in `WifiManagerService::walkTrace_`
+   during `begin()` and emitted from `main.cpp` as a
+   `DiagSyslog::sendEvent("wifi_walk", ...)` packet AFTER WiFi comes
+   up. Records: candidate count, scan duration, scan network count,
+   each attempt (pass label + SSID + connect duration + OK/FAIL),
+   retry flag, and portal-fallback flag. String is capped at ~400
+   chars to fit one UDP packet.
+
+2. **Walk retry before portal.** If the first walk (Pass 1 + Pass 2)
+   fails, wait 3s (radio cooldown, DHCP settle, AP beacon window)
+   and walk one more time before dropping to captive portal. Common
+   case (walk succeeds first time) cost zero. Bad-scan-that-happens-
+   to-recover cost 3s + one more walk. Total worst case for a fully-
+   deaf boot: `2 × (scan ~2s + 2 candidates × 15s) + 3s ≈ 67s`
+   before portal — still well under any operator-perceived timeout.
+
+Both changes are non-destructive: they add observability + resilience
+without altering the successful boot path. Fleet retest: watch for
+`wifi_walk` events at each boot and confirm the trace matches expected
+happy-path (`p1:SpectrumSetup-4D...OK` or similar). Any failed boot
+now leaves a forensic record.
+
 ## 2026-06-30 BUG-087 — walkCandidates skips scan-absent SSIDs including hidden — fixed in 0.2.42
 
 Operator-reported 2026-06-30: "if the rebooters are supposed to have

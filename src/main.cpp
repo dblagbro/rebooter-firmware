@@ -226,6 +226,15 @@ void setup() {
     // the device dies before the first heap-snapshot interval fires.
     DiagSyslog::sendResetReason(g_status.resetReason);
     DiagSyslog::sendWifiState("boot_wifi_state", "post-begin");
+    // 0.2.43 (BUG-087 follow-up): emit the boot-time WiFi walk
+    // decisions. Answers "which SSIDs did we try, in which pass, for
+    // how long, and did we drop to captive portal?" — the questions
+    // Serial.print was answering into the void on production Sonoffs.
+    {
+      String tail = g_wifi.walkFellToPortal() ? String(F(";result=portal"))
+                                              : String(F(";result=connected"));
+      DiagSyslog::sendEvent(F("wifi_walk"), g_wifi.walkTrace() + tail);
+    }
   }
   g_discovery.begin(&g_config, &g_status);
   g_web.begin(&g_config, &g_status, &g_relay, &g_cfgMgr, &g_eventLog, &g_monitor, &g_ota, &g_auth, &g_wifi, &g_power, &g_discovery);
