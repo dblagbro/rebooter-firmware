@@ -573,6 +573,35 @@ without altering the successful boot path. Fleet retest: watch for
 happy-path (`p1:SpectrumSetup-4D...OK` or similar). Any failed boot
 now leaves a forensic record.
 
+**Empirical retry-path validation 2026-07-04.** Built a debug variant
+`0.2.43-dev-central-testretry` guarded by `-DWIFI_WALK_TEST_RETRY` that
+forces the first `attemptCandidate` call of the boot to return false
+after 500 ms. Flashed to .190 and observed the trace:
+
+```
+cand_n=2;scan_ms=2287;scan_n=12;
+p1:VoIPguru_wifi;ms=500;FAIL;
+p2:SpectrumSetup-4D;ms=15266;FAIL;
+retry;
+scan_ms=2182;scan_n=9;
+p1:VoIPguru_wifi;ms=3170;OK;
+result=connected
+```
+
+End-to-end confirmed: first walk failed → retry-before-portal fired →
+second walk connected on first attempt → device online without
+operator intervention. `.190` reflashed back to plain 0.2.43 after
+the test. Total dead-time from Power On to online: ~35s. Test hook
+removed from `wifi_manager.cpp`; production tree unchanged.
+
+The trace also incidentally confirmed **the operator's environment
+has SpectrumSetup-4D unreachable** — `p2:SpectrumSetup-4D;ms=15266;
+FAIL` shows the full 15s connect timeout on the scan-absent secondary.
+Only VoIPguru_wifi is a viable candidate at these device locations,
+so any transient VoIPguru scan miss + connect flake is the single
+credible root cause for the historical "keep having to re-join"
+symptom the operator reported.
+
 ## 2026-06-30 BUG-087 — walkCandidates skips scan-absent SSIDs including hidden — fixed in 0.2.42
 
 Operator-reported 2026-06-30: "if the rebooters are supposed to have

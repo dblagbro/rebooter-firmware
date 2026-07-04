@@ -56,6 +56,13 @@ bool WifiManagerService::attemptCandidate(const Candidate& candidate) {
   Serial.print(candidate.ssid);
   Serial.println(candidate.fromSaved ? " (saved)" : " (built-in)");
 
+  // 0.2.43-testretry (2026-07-04): a WIFI_WALK_TEST_RETRY debug build
+  // was flashed to .190 to empirically verify the retry-before-portal
+  // path introduced in this version. Trace confirmed: p1 forced fail →
+  // p2 timeout → retry → p1 succeeded on retry walk → device online.
+  // Test hook removed after validation; production 0.2.43 is unchanged
+  // from the fleet build. See bug-log.md BUG-087 follow-up entry.
+
   WiFi.mode(WIFI_STA);
   WiFi.persistent(false);
   if (candidate.password.isEmpty()) {
