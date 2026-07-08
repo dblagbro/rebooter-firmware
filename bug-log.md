@@ -602,6 +602,37 @@ so any transient VoIPguru scan miss + connect flake is the single
 credible root cause for the historical "keep having to re-join"
 symptom the operator reported.
 
+**Real-prod validation 2026-07-08.** 3 days after fleet-wide 0.2.43
+deploy, `.188` shows 2 boots where the retry-before-portal path fired
+in production (grep for `;retry;` in `/data/diag/c4d8d50d2c1f.jsonl`):
+
+```
+2026-07-06T06:00:08Z:
+  cand_n=2;scan_ms=2286;scan_n=10;
+  p1:VoIPguru_wifi;ms=15330;FAIL;      ← first connect TIMED OUT
+  p2:SpectrumSetup-4D;ms=15267;FAIL;   ← fallback also timed out (unreachable)
+  retry;
+  scan_ms=2180;scan_n=11;
+  p1:VoIPguru_wifi;ms=3167;OK;         ← retry succeeded in 3.2s
+  result=connected
+
+2026-07-06T14:10:02Z: (same shape, ~8 hours later on same device)
+```
+
+Notable: on both retry boots, VoIPguru_wifi **was in the scan result**
+on the first walk (Pass 1 attempted it) but the connect itself timed
+out at ~15.3s. That's a transient-connect-failure mode, distinct from
+the hidden-SSID / scan-miss failure mode the 0.2.42 two-pass walk
+was designed for. Root cause is likely momentary AP unresponsiveness,
+bad-radio-state after boot, or slow DHCP — the 3s retry cooldown
+resets it and the second attempt connects in 3.2s.
+
+That closes the "does retry ever actually fire in prod" question:
+**yes, 2 times in 3 days on `.188`, saving 2 operator-intervention
+events**. Zero `portal_fallback` events across all 3 devices in the
+same window. The fix is doing what it was designed for and also
+catching a failure mode the design didn't originally target.
+
 ## 2026-06-30 BUG-087 — walkCandidates skips scan-absent SSIDs including hidden — fixed in 0.2.42
 
 Operator-reported 2026-06-30: "if the rebooters are supposed to have
