@@ -1,0 +1,72 @@
+name: CI
+
+# CI gate for rebooter-firmware.
+#
+# 2026-07-08 — filed after the rebooter-droids v0.6.56 4-day-red-CI
+# incident. Rebooter-droids had CI + a release script, but nothing
+# waited for the light before deploying. Rebooter-firmware had NO CI
+# at all — worse, because "green" wasn't even claimable. This gate
+# closes that gap.
+#
+# What it does today:
+#   1. Build the sonoff_s31 target with PlatformIO. Any compile error,
+#      linker error, or missing-symbol error fails the build.
+#   2. Report the produced firmware.bin size for growth tracking.
+#   3. Fail if firmware.bin exceeds 950000 bytes — hard ceiling that
+#      leaves headroom under the ESP8266 4MB-flash / FS_1M partition
+#      cap (~1 MB program partition). Prevents "shipped but won't fit
+#      in the OTA slot" from happening silently.
+#
+# What it doesn't do (yet):
+#   - No unit tests exist in the repo. Adding a PlatformIO test env
+#     is a separate follow-up (see bug-log.md for the scope note).
+#   - No hardware-in-the-loop tests. Would require a runner with a
+#     serial-connected board — out of scope for GitHub-hosted runners.
+#
+# Trigger: every push to master + every PR. No other branches.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build:
+    name: Build sonoff_s31 + size gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PlatformIO
+        run: |
+          pip install --upgrade pip
+          pip install platformio
+
+      - name: Build sonoff_s31 target
+        run: pio run -e sonoff_s31
+
+      - name: Report firmware size
+        id: size
+        run: |
+          size=$(stat -c %s .pio/build/sonoff_s31/firmware.bin)
+          echo "firmware.bin size: $size bytes ($(printf %.1f $(echo "$size / 1024" | bc -l)) KB)"
+          echo "SIZE=$size" >> "$GITHUB_OUTPUT"
+
+      - name: Fail on size ceiling breach
+        run: |
+          size="${{ steps.size.outputs.SIZE }}"
+          ceiling=950000
+          if [ "$size" -gt "$ceiling" ]; then
+            echo "::error::firmware.bin exceeds ceiling: $size > $ceiling bytes"
+            echo "ESP8266 4 MB flash + FS_1M partition scheme leaves ~1 MB for"
+            echo "the program image + OTA slot. Ceiling of $ceiling bytes"
+            echo "leaves headroom for the OTA safety margin."
+            exit 1
+          fi
+          echo "::notice::firmware.bin size $size bytes is under ceiling $ceiling"
