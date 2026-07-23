@@ -156,6 +156,34 @@ void CentralClient::maybeHeapPressureRestart() {
   // fires after 30 min of pressure — 80s vs 30 min, the protection
   // wins by a factor of 22.
   constexpr uint32_t PROACTIVE_BURST_SUPPRESS_AFTER_MS = 4UL * 60UL * 60UL * 1000UL;
+  constexpr uint32_t PROACTIVE_BURST_SUPPRESS_AFTER_S  = 4UL * 60UL * 60UL;
+
+  // 0.2.44 BUG-088: PRIMARY cooldown check — persistent + wall-clock.
+  // The pre-0.2.44 check below gated on lastPlannedRestartReason,
+  // which reset on Exception / Power On / WDT. That let devices whose
+  // last real reboot was any of those slip past the 4h cap and fire
+  // proactive-restart every ~30 min. Observed on .188 (6 consecutive
+  // Power On resets in 1h) and .185 (Exception loops with proactive
+  // fires between). Fix: use a persistent `lastProactiveFireUnixSeconds`
+  // in `/bootstate.json` (survives every reboot type) and compare
+  // against the current SNTP-synced wall clock.
+  //
+  // Only holds when BOTH the wall clock is synced AND we have a real
+  // persisted fire timestamp. Otherwise fall through to the legacy
+  // check so pre-fix behavior remains the floor.
+  if (status_->timeSynced && status_->lastProactiveFireUnixSeconds > 0) {
+    const uint32_t nowUnixS = static_cast<uint32_t>(status_->wallClockUnixMs / 1000ULL);
+    if (nowUnixS >= status_->lastProactiveFireUnixSeconds) {
+      const uint32_t elapsedS = nowUnixS - status_->lastProactiveFireUnixSeconds;
+      if (elapsedS < PROACTIVE_BURST_SUPPRESS_AFTER_S) {
+        return;
+      }
+    }
+    // If nowUnixS < lastProactiveFireUnixSeconds the clock rolled
+    // backward (rare — SNTP correction, DST edge). Don't suppress —
+    // let the legacy check below decide.
+  }
+
   const bool priorWasProactive =
       status_->lastPlannedRestartReason == "heap_pressure_proactive";
   if (priorWasProactive &&
@@ -202,7 +230,14 @@ void CentralClient::maybeHeapPressureRestart() {
                        " below threshold, uptime=" + String(status_->uptimeSeconds) + "s");
     eventLog_->flush();
   }
-  cfgMgr_->prepareForPlannedRestart("heap_pressure_proactive");
+  // 0.2.44 BUG-088: persist the fire timestamp so the cooldown check
+  // on the NEXT boot survives Exception / Power On / WDT. Zero if
+  // wall clock isn't synced yet — cooldown falls back to the legacy
+  // in-status check in that case.
+  const uint32_t fireUnixS = status_->timeSynced
+      ? static_cast<uint32_t>(status_->wallClockUnixMs / 1000ULL)
+      : 0U;
+  cfgMgr_->prepareForPlannedRestart("heap_pressure_proactive", fireUnixS);
   // 0.2.26 CRITICAL fix (code review F6) — see safeRestartWait() in
   // include/safe_restart.h for the SYS-yield-race rationale. 0.2.33
   // factored this into a shared helper used by every pre-restart site.

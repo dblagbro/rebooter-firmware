@@ -155,6 +155,9 @@ void setup() {
     g_eventLog.add("crash", "Crash dump captured from previous boot: " + g_status.lastCrashReason);
   }
   g_status.lastPlannedRestartReason = bootHealth.previousPlannedRestartReason;
+  // 0.2.44 BUG-088: carry the persistent proactive-fire timestamp into
+  // status so the heap client can use it in its cooldown check.
+  g_status.lastProactiveFireUnixSeconds = bootHealth.lastProactiveFireUnixSeconds;
   if (!g_status.lastPlannedRestartReason.isEmpty()) {
     g_eventLog.add("boot", "Planned restart breadcrumb: " + g_status.lastPlannedRestartReason);
   }

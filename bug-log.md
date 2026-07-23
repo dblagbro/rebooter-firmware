@@ -538,7 +538,63 @@ project.
   recovery_mode cluster reappears, file a fresh entry rather than
   reopening this one; the failure surface has materially shifted.
 
-## 2026-07-02 BUG-087 follow-up — walk-decision visibility + retry — 0.2.43
+## 2026-07-23 BUG-088 — proactive-restart cooldown persistence across non-planned reboots — 0.2.44
+
+Operator report 2026-07-22: "i've noticed the relays resetting."
+
+Field data at pause:
+- .190: fully unresponsive since 2026-07-09 (no hub check-in, no ping
+  response). Physical intervention required — outside firmware scope.
+- .188: 6 consecutive `Power On` resets in ~1h with proactive-restart
+  fires interleaved every ~32 min. Power On is a WALL POWER LOSS
+  event, not the firmware restarting itself — likely the device is
+  plugged into its own controlled outlet or the outlet is bad. Flagged
+  to operator; not a firmware issue.
+- .185: `Exception` boot loop with proactive-restart fires between —
+  device runs 5-50 min then crashes with an Exception, reboots, runs
+  again, repeats. 12 cycles in ~3h.
+
+Root cause on .185's pattern (and the fleet in general when the
+crash-then-proactive sequence happens): the 0.2.38 BUG-085 cooldown
+in `central_client_heap.cpp:159-164` gated on
+`status_->lastPlannedRestartReason == "heap_pressure_proactive"`.
+That state is populated on boot from `bootstate.json` where
+`beginBootSession()` reads `plannedRestart` + `plannedRestartReason`.
+Any of Exception / Power On / WDT reboots the device WITHOUT calling
+`prepareForPlannedRestart` first, so `bootstate.json` stays in the
+"planned=false" state it was left in by the prior planned restart —
+which then gets read as "prior was NOT proactive" on the current
+boot. Cooldown blank-slates. Proactive fires again within ~30 min.
+
+**Fix in 0.2.44**: dual-strategy cooldown check.
+
+1. New persistent field `lastProactiveFireUnixSeconds` on
+   `StoredBootState` + `BootHealthSnapshot` + `AppStatus`, serialized
+   into `bootstate.json` as `last_proactive_fire_unix_s`. Missing on
+   pre-0.2.44 files is treated as 0 (never fired) — matches the
+   pre-fix behavior for the first proactive after upgrade.
+2. `prepareForPlannedRestart(reason, proactiveFireUnixSeconds = 0)` —
+   new optional 2nd argument. When the reason is
+   `heap_pressure_proactive` AND the caller passes a non-zero value
+   (i.e. SNTP is synced), the field is updated. All other planned-
+   restart callers pass 0 (default) and don't touch it — no
+   perturbation to non-heap paths.
+3. `central_client_heap.cpp` reads `status_->wallClockUnixMs` +
+   `status_->timeSynced` at cooldown-check time. If both are set AND
+   the persisted timestamp is > 0 AND `now - persisted < 4h`, suppress
+   the fire. Otherwise fall through to the legacy in-status
+   `priorWasProactive` check — pre-fix behavior remains the floor
+   when SNTP hasn't come up yet.
+
+Storage cost: 4 bytes in bootstate.json. Runtime cost: one uint32
+subtraction per heap-pressure check. No new failure modes: a
+never-synced clock is exactly the pre-fix path.
+
+- built: yes (27.5s, size unchanged material)
+- shipped: fleet OTA push after CI green
+- verify: watch .185's diag stream — should NOT see a proactive fire
+  within 4h of the prior one, even if intervening resets are Exception
+  or Power On
 
 Operator report 2026-07-02: "i just re-added 2 devices to wifi again
 manually that didn't auto-join voipguru" — despite 0.2.42's two-pass

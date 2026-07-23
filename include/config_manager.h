@@ -9,6 +9,15 @@ struct BootHealthSnapshot {
   bool previousBootDifferentFirmware = false;
   bool autoRecoveryTriggered = false;
   String previousPlannedRestartReason = "";
+  // 0.2.44 BUG-088: unix-time (SECONDS since epoch) of the most recent
+  // proactive-restart fire. Survives every reset type — Power On,
+  // Exception, WDT — so the 4h burst-suppressor in
+  // central_client_heap.cpp can hold across non-planned reboots.
+  // Zero when never fired OR when the fire happened before wall-clock
+  // was ever synced. Populated from `/bootstate.json` in
+  // beginBootSession(); the heap client checks it against a fresh
+  // wall-clock read at cooldown-decision time.
+  uint32_t lastProactiveFireUnixSeconds = 0;
 };
 
 class ConfigManager {
@@ -20,7 +29,16 @@ public:
   bool restoreLastKnownGood(AppConfig& out);
   BootHealthSnapshot beginBootSession(const String& currentFirmwareVersion);
   bool markBootHealthy();
-  bool prepareForPlannedRestart(const String& reason = "");
+  // 0.2.44 BUG-088: `proactiveFireUnixSeconds` is only used when
+  // `reason == "heap_pressure_proactive"` — the heap client passes
+  // its current SNTP-synced wall-clock reading so the burst-suppressor
+  // check on the NEXT boot can measure real elapsed time regardless
+  // of intervening Exception / Power On / WDT resets. Pass 0 (default)
+  // to leave the persistent field unchanged; other planned-restart
+  // callers (OTA, factory-reset, hub-issued device_restart) don't
+  // need to touch it.
+  bool prepareForPlannedRestart(const String& reason = "",
+                                uint32_t proactiveFireUnixSeconds = 0);
   bool clearPlannedRestart();
   // 0.2.37 BUG-082: RAII guard. Stage a planned-restart reason at
   // scope entry; auto-clear it at scope exit UNLESS commit() was

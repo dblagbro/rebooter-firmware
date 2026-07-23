@@ -17,6 +17,10 @@ struct StoredBootState {
   bool plannedRestart = false;
   String lastFirmwareVersion = "";
   String plannedRestartReason = "";
+  // 0.2.44 BUG-088: unix seconds (SNTP-based) of the most recent
+  // proactive-restart fire. Persists across every reboot type so
+  // the 4h burst-suppressor holds across Exception, Power On, WDT.
+  uint32_t lastProactiveFireUnixSeconds = 0;
 };
 
 static StoredBootState loadBootStateRecord() {
@@ -48,6 +52,10 @@ static StoredBootState loadBootStateRecord() {
       state.plannedRestart = doc["planned_restart"] | false;
       state.lastFirmwareVersion = doc["last_firmware_version"] | "";
       state.plannedRestartReason = doc["planned_restart_reason"] | "";
+      // 0.2.44 BUG-088 (added): persistent proactive-fire timestamp.
+      // Missing on pre-0.2.44 bootstate files → 0, which the cooldown
+      // check reads as "never fired," matching the pre-fix behavior.
+      state.lastProactiveFireUnixSeconds = doc["last_proactive_fire_unix_s"] | 0UL;
     }
 
   file.close();
@@ -63,6 +71,8 @@ static bool saveBootStateRecord(const StoredBootState& state) {
   doc["planned_restart"] = state.plannedRestart;
   doc["last_firmware_version"] = state.lastFirmwareVersion;
   doc["planned_restart_reason"] = state.plannedRestartReason;
+  // 0.2.44 BUG-088: persistent proactive-fire timestamp; see header.
+  doc["last_proactive_fire_unix_s"] = state.lastProactiveFireUnixSeconds;
 
   // 0.2.19: atomic temp+rename mirror of the event_log fix shipped in
   // 0.2.18. Pre-fix this opened /bootstate.json in "w" (truncate) — a
@@ -605,6 +615,12 @@ BootHealthSnapshot ConfigManager::beginBootSession(const String& currentFirmware
     snapshot.previousBootPlannedRestart = true;
     snapshot.previousPlannedRestartReason = state.plannedRestartReason;
   }
+  // 0.2.44 BUG-088: always surface the persistent proactive-fire
+  // timestamp — independent of plannedRestart because the whole
+  // point is that Exception + Power On reboots CLEAR plannedRestart
+  // but MUST NOT wipe the persistent fire history the cooldown
+  // relies on.
+  snapshot.lastProactiveFireUnixSeconds = state.lastProactiveFireUnixSeconds;
 
   if (state.bootInProgress) {
     snapshot.previousBootIncomplete = true;
@@ -658,12 +674,23 @@ bool ConfigManager::clearPlannedRestart() {
   return saveBootStateRecord(state);
 }
 
-bool ConfigManager::prepareForPlannedRestart(const String& reason) {
+bool ConfigManager::prepareForPlannedRestart(const String& reason,
+                                              uint32_t proactiveFireUnixSeconds) {
   StoredBootState state = loadBootStateRecord();
   state.consecutiveUnhealthyBoots = 0;
   state.bootInProgress = false;
   state.plannedRestart = true;
   state.plannedRestartReason = reason;
+  // 0.2.44 BUG-088: on a heap-proactive fire with a valid SNTP-synced
+  // wall clock, persist the fire timestamp. Only update on a real
+  // proactive fire — every other planned-restart caller passes 0 so
+  // the persisted history is not perturbed. When the clock isn't
+  // synced yet (proactiveFireUnixSeconds == 0), fall back to the
+  // legacy behavior — the on-boot cooldown check tolerates a zero
+  // persisted timestamp exactly like the pre-fix code path did.
+  if (proactiveFireUnixSeconds > 0 && reason == "heap_pressure_proactive") {
+    state.lastProactiveFireUnixSeconds = proactiveFireUnixSeconds;
+  }
   return saveBootStateRecord(state);
 }
 

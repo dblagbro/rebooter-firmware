@@ -69,6 +69,15 @@ struct RuntimeStatus {
   String setupApName = "";
   String resetReason = "";
   String lastPlannedRestartReason = "";
+  // 0.2.44 BUG-088: persistent-across-any-reset unix-time (SECONDS since
+  // epoch) of the most recent proactive-restart fire. Loaded from
+  // `/bootstate.json` in beginBootSession(). The heap-pressure
+  // burst-suppressor in central_client_heap.cpp uses this + the current
+  // wall-clock to enforce the 4h cooldown across Exception + Power On +
+  // WDT — not just Software/System restart, which the pre-fix cooldown
+  // gate silently relied on. Zero means "never fired or never SNTP-
+  // synced when it did," which the cooldown check tolerates as pre-fix.
+  uint32_t lastProactiveFireUnixSeconds = 0;
   // 0.2.8 (#154): latest opt-in periodic nearby-network scan, mirrored from
   // WifiManagerService so the heartbeat builder can read it. Empty unless
   // wifi.periodicScanEnabled. Compact "[{ssid,rssi}]" + the uptime it was taken.
